@@ -2,7 +2,7 @@
 <project version="4">
   <component name="DBNavigator.Project.DataEditorManager">
     <record-view-column-sorting-type value="BY_INDEX" />
-    <value-preview-text-wrapping value="true" />
+    <value-preview-text-wrapping value="false" />
     <value-preview-pinned value="false" />
   </component>
   <component name="DBNavigator.Project.DatabaseBrowserManager">
@@ -12,8 +12,8 @@
     <loaded-nodes />
   </component>
   <component name="DBNavigator.Project.DatabaseConsoleManager">
-    <connection id="aaa47e39-dedc-42f4-9780-c7982d8d03ee">
-      <console name="Connection" type="STANDARD" schema="" session="Main" />
+    <connection id="0cf7f2c3-ff61-452f-abe6-286dbd6a2d01">
+      <console name="Connection 1" type="STANDARD" schema="" session="Main" />
     </connection>
   </component>
   <component name="DBNavigator.Project.DatabaseEditorStateManager">
@@ -21,19 +21,11 @@
   </component>
   <component name="DBNavigator.Project.DatabaseFileManager">
     <open-files>
-      <object connection-id="aaa47e39-dedc-42f4-9780-c7982d8d03ee" object-ref="schemas/main/tables/cards" />
-      <object connection-id="aaa47e39-dedc-42f4-9780-c7982d8d03ee" object-ref="schemas/main/tables/users" />
-      <object connection-id="aaa47e39-dedc-42f4-9780-c7982d8d03ee" object-ref="schemas/main/tables/user_cards" />
-      <object connection-id="aaa47e39-dedc-42f4-9780-c7982d8d03ee" object-ref="schemas/main/tables/decks" />
-      <object connection-id="aaa47e39-dedc-42f4-9780-c7982d8d03ee" object-ref="schemas/main/tables/user_decks" />
+      <object connection-id="0cf7f2c3-ff61-452f-abe6-286dbd6a2d01" object-ref="schemas/main/tables/cards" />
     </open-files>
   </component>
   <component name="DBNavigator.Project.DatasetFilterManager">
-    <filter-actions connection-id="aaa47e39-dedc-42f4-9780-c7982d8d03ee" dataset="main.user_decks" active-filter-id="EMPTY_FILTER" />
-    <filter-actions connection-id="aaa47e39-dedc-42f4-9780-c7982d8d03ee" dataset="main.users" active-filter-id="EMPTY_FILTER" />
-    <filter-actions connection-id="aaa47e39-dedc-42f4-9780-c7982d8d03ee" dataset="main.cards" active-filter-id="EMPTY_FILTER" />
-    <filter-actions connection-id="aaa47e39-dedc-42f4-9780-c7982d8d03ee" dataset="main.user_cards" active-filter-id="EMPTY_FILTER" />
-    <filter-actions connection-id="aaa47e39-dedc-42f4-9780-c7982d8d03ee" dataset="main.decks" active-filter-id="EMPTY_FILTER" />
+    <filter-actions connection-id="0cf7f2c3-ff61-452f-abe6-286dbd6a2d01" dataset="main.cards" active-filter-id="EMPTY_FILTER" />
   </component>
   <component name="DBNavigator.Project.ExecutionManager">
     <retain-sticky-names value="false" />
@@ -52,9 +44,9 @@
   </component>
   <component name="DBNavigator.Project.Settings">
     <connections>
-      <connection id="aaa47e39-dedc-42f4-9780-c7982d8d03ee" active="true" signed="true">
+      <connection id="0cf7f2c3-ff61-452f-abe6-286dbd6a2d01" active="true" signed="true">
         <database>
-          <name value="Connection" />
+          <name value="Connection 1" />
           <description value="" />
           <database-type value="SQLITE" />
           <config-type value="BASIC" />

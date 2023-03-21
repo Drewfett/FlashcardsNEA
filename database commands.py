@@ -1,6 +1,8 @@
 import sqlite3
 from time import time
+
 db = 'data/newdb.db'
+
 
 def create_tables(db):
     create_users = """CREATE TABLE IF NOT EXISTS users(
@@ -17,6 +19,7 @@ def create_tables(db):
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         deck_id INTEGER,
         template_id INTEGER,
+        format_id INTEGER
         modified INT,
         data TEXT,
         isPublic INT,
@@ -94,7 +97,7 @@ def create_tables(db):
         )
     """
 
-# add name column
+    # add name column
 
     create_configs = """CREATE TABLE IF NOT EXISTS configs (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -133,10 +136,20 @@ def create_tables(db):
     )
     """
 
+    create_formats = """CREATE TABLE IF NOT EXISTS formats (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        template_id INT,
+        creator_id INT,
+        front TEXT,
+        back TEXT,
+        styling TEXT
+    )
+    """
+
     conn = sqlite3.connect(db)
     cur = conn.cursor()
     create_statements = [create_users, create_cards, create_user_cards, create_decks, create_user_decks,
-                         create_templates, create_configs, create_revlog, create_notes]
+                         create_templates, create_configs, create_revlog, create_notes, create_formats]
     for statement in create_statements:
         cur.execute(statement)
     conn.commit()
@@ -149,12 +162,7 @@ cur = con.cursor()
 # cur.execute("DROP TABLE user_cards")
 
 
-create_tables(db)
-cur.execute("""INSERT INTO templates (name, fields, sortfield, modified, created_uid)
-VALUES('Basic', 'front,back', 'front', ?, 1),
-('UItest', 'front,back,image,sound,ex1,ex2,ex3,ex4,ex5', 'front', ?, 1)
-""",(time(), time()))
-
+# create_tables(db)
 
 # cur.execute("""DROP TABLE cards""")
 # cur.execute(create_cards)
@@ -216,12 +224,8 @@ VALUES('Basic', 'front,back', 'front', ?, 1),
 #     2)"""
 # )
 # cur.execute("ALTER TABLE configs ADD COLUMN name TEXT")
-cur.execute("""SELECT sql FROM sqlite_master
-WHERE type = 'table'""")
+cur.execute("""SELECT * FROM formats""")
 print(cur.fetchall())
 cur.close()
 con.commit()
 con.close()
-
-
-

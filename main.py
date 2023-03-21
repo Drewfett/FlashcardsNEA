@@ -5,7 +5,7 @@ from PyQt5.QtGui import QColor, QFont
 from PyQt5.uic import loadUi
 from PyQt5.QtWidgets import QDialog, QApplication, QAction, QStackedWidget, QMainWindow, QMenu, QToolButton, QLabel, \
     QScrollArea, QSizePolicy, QVBoxLayout, QHeaderView, QCheckBox, QLineEdit, QComboBox, QSpinBox, QTableView, \
-    QSpacerItem, QAbstractItemView, QTreeView
+    QSpacerItem, QAbstractItemView, QTreeView, QPushButton, QListView
 from PyQt5.Qt import QStandardItem, QStandardItemModel, QWidget
 from PyQt5.QtCore import Qt
 
@@ -35,6 +35,7 @@ import math
 #   - For this, it seems to be that whenever a signal is activated on the client side,
 #   relevant data passed to functions should be passed and executed on the server side, and any necessary data used in
 #   displaying sent back to the client
+#    work out sync or async model
 
 #  User Profiles and Following Tab - extra
 #  Importing delimted files into decks - also extra but probably more important
@@ -1154,9 +1155,6 @@ class CFGNameWindow(QWidget):
             self.confirmbutton.setText("Confirm")
 
 
-
-
-
 class CardsMain(QMainWindow):
     # todo get filters working
     def __init__(self, user):
@@ -1368,7 +1366,9 @@ class CardsMain(QMainWindow):
 
 class AddCard(QMainWindow):
     def __init__(self, user):
+        self.formatswindow = None
         self.user = user
+        self.config = None
         super().__init__()
         loadUi("addcard.ui", self)
 
@@ -1385,6 +1385,7 @@ class AddCard(QMainWindow):
         # self.scroll.setMaximumHeight(491)
 
         self.fill_templates_box()
+        self.templatesbutton.clicked.connect(self.viewtemplates)
 
         self.fill_decks_box()
 
@@ -1436,6 +1437,18 @@ class AddCard(QMainWindow):
             self.scrollWidgetContents_layout.addWidget(line_edit)
             self.line_edits.append(line_edit)
 
+    def viewtemplates(self):
+        self.formatswindow = FormatsWindow()
+        self.formatswindow.show()
+        self.formatswindow.selectbutton.clicked.connect(self.setformat())
+
+    def setformat(self):
+        formats = self.formatswindow.formatslist.format
+        self.formatswindow.set
+        t = QListView()
+        t.selectedIndexes()
+
+        pass
 
     def fill_decks_box(self):
         self.decksbox.clear()
@@ -1497,6 +1510,19 @@ class AddCard(QMainWindow):
                 self.error.setText("Card has no data")
             except Exception as e:
                 print(e)
+
+
+class FormatsWindow(QWidget):
+    def __init__(self):
+        super().__init__()
+        loadUi("formats.ui", self)
+        self.format = None
+
+    def loadformats(self):
+
+
+
+
 
 
 class StatsPage(QMainWindow):

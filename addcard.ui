@@ -400,17 +400,17 @@ font: 16pt;color:rgb(47, 50, 58)</string>
          <property name="styleSheet">
           <string notr="true"/>
          </property>
-         <widget class="QPushButton" name="pushButton">
+         <widget class="QPushButton" name="templatesbutton">
           <property name="geometry">
            <rect>
-            <x>220</x>
-            <y>200</y>
-            <width>251</width>
+            <x>490</x>
+            <y>10</y>
+            <width>191</width>
             <height>32</height>
            </rect>
           </property>
           <property name="text">
-           <string>PushButton</string>
+           <string>Template Name</string>
           </property>
          </widget>
         </widget>
