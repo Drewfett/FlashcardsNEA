@@ -12,20 +12,26 @@
     <loaded-nodes />
   </component>
   <component name="DBNavigator.Project.DatabaseConsoleManager">
-    <connection id="0cf7f2c3-ff61-452f-abe6-286dbd6a2d01">
-      <console name="Connection 1" type="STANDARD" schema="" session="Main" />
+    <connection id="6585c18a-1f41-42f8-a6e7-bd51ea421e6a">
+      <console name="Connection" type="STANDARD" schema="" session="Main" />
     </connection>
   </component>
   <component name="DBNavigator.Project.DatabaseEditorStateManager">
-    <last-used-providers />
+    <last-used-providers>
+      <object-type object-type="TABLE" editor-provider="DATA" />
+    </last-used-providers>
   </component>
   <component name="DBNavigator.Project.DatabaseFileManager">
     <open-files>
-      <object connection-id="0cf7f2c3-ff61-452f-abe6-286dbd6a2d01" object-ref="schemas/main/tables/cards" />
+      <object connection-id="6585c18a-1f41-42f8-a6e7-bd51ea421e6a" object-ref="schemas/main/tables/templates" />
+      <object connection-id="6585c18a-1f41-42f8-a6e7-bd51ea421e6a" object-ref="schemas/main/tables/cards" />
     </open-files>
   </component>
   <component name="DBNavigator.Project.DatasetFilterManager">
-    <filter-actions connection-id="0cf7f2c3-ff61-452f-abe6-286dbd6a2d01" dataset="main.cards" active-filter-id="EMPTY_FILTER" />
+    <filter-actions connection-id="6585c18a-1f41-42f8-a6e7-bd51ea421e6a" dataset="main.formats" active-filter-id="EMPTY_FILTER" />
+    <filter-actions connection-id="6585c18a-1f41-42f8-a6e7-bd51ea421e6a" dataset="main.templates" active-filter-id="EMPTY_FILTER" />
+    <filter-actions connection-id="6585c18a-1f41-42f8-a6e7-bd51ea421e6a" dataset="main.cards" active-filter-id="EMPTY_FILTER" />
+    <filter-actions connection-id="6585c18a-1f41-42f8-a6e7-bd51ea421e6a" dataset="main.decks" active-filter-id="EMPTY_FILTER" />
   </component>
   <component name="DBNavigator.Project.ExecutionManager">
     <retain-sticky-names value="false" />
@@ -44,9 +50,9 @@
   </component>
   <component name="DBNavigator.Project.Settings">
     <connections>
-      <connection id="0cf7f2c3-ff61-452f-abe6-286dbd6a2d01" active="true" signed="true">
+      <connection id="6585c18a-1f41-42f8-a6e7-bd51ea421e6a" active="true" signed="true">
         <database>
-          <name value="Connection 1" />
+          <name value="Connection" />
           <description value="" />
           <database-type value="SQLITE" />
           <config-type value="BASIC" />
@@ -66,7 +72,7 @@
           <deprecated-pwd value="" />
         </database>
         <properties>
-          <auto-commit value="false" />
+          <auto-commit value="true" />
         </properties>
         <ssh-settings>
           <active value="false" />
@@ -89,7 +95,7 @@
           <session-management value="true" />
           <ddl-file-binding value="true" />
           <database-logging value="true" />
-          <connect-automatically value="true" />
+          <connect-automatically value="false" />
           <restore-workspace value="true" />
           <restore-workspace-deep value="false" />
           <environment-type value="default" />

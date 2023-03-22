@@ -71,7 +71,7 @@ def create_tables(db):
     # does the 'fields' field need to be json? Could also use an auxiliary table for each template but that could become
     # convoluted, could also try comma separated values.
     # sortfield generated automatically from first field in template
-    # need to template tables? One for general templates for creating card specific ones and one to store those?
+    # need two template tables? One for general templates for creating card specific ones and one to store those?
 
     create_templates = """ CREATE TABLE IF NOT EXISTS templates (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -80,22 +80,25 @@ def create_tables(db):
         sortfield TEXT,
         modified INT,
         created_uid INT,
-        isPublic INT
-        )
+        front_format TEXT,
+        back_format TEXT,
+        styling TEXT
+                )
     """
 
-    create_notes = """CREATE TABLE IF NOT EXISTS formats (
+    create_formats = """CREATE TABLE IF NOT EXISTS formats (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        tid INT,
         name TEXT,
-        fronts TEXT,
-        backs TEXT,
+        template_id INT,
+        creator_id INT,
+        front TEXT,
+        back TEXT,
+        styling TEXT,
         modified INT,
-        created_uid INT,
-        isPublic INT,
-        FOREIGN KEY(tid) REFERENCES templates(id)
-        )
+        foreign key (template_id) REFERENCES templates(id)
+    )
     """
+
 
     # add name column
 
@@ -136,20 +139,11 @@ def create_tables(db):
     )
     """
 
-    create_formats = """CREATE TABLE IF NOT EXISTS formats (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        template_id INT,
-        creator_id INT,
-        front TEXT,
-        back TEXT,
-        styling TEXT
-    )
-    """
 
     conn = sqlite3.connect(db)
     cur = conn.cursor()
     create_statements = [create_users, create_cards, create_user_cards, create_decks, create_user_decks,
-                         create_templates, create_configs, create_revlog, create_notes, create_formats]
+                         create_templates, create_configs, create_revlog, create_formats]
     for statement in create_statements:
         cur.execute(statement)
     conn.commit()
@@ -161,9 +155,9 @@ cur = con.cursor()
 # cur.execute("DROP TABLE templates")
 # cur.execute("DROP TABLE user_cards")
 
-
-# create_tables(db)
-
+# cur.execute("""DROP TABLE templates""")
+create_tables(db)
+# cur.execute("""ALTER TABLE formats ADD name TEXT""")
 # cur.execute("""DROP TABLE cards""")
 # cur.execute(create_cards)
 # cur.execute(create_templates)
@@ -224,8 +218,10 @@ cur = con.cursor()
 #     2)"""
 # )
 # cur.execute("ALTER TABLE configs ADD COLUMN name TEXT")
+
 cur.execute("""SELECT * FROM formats""")
+cur.execute(f"""INSERT INTO formats (name, template_id, creator_id, modified) VALUES ('basic', 1, 1, {time()})""")
 print(cur.fetchall())
-cur.close()
 con.commit()
+cur.close()
 con.close()

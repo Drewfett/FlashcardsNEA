@@ -5,9 +5,9 @@ from PyQt5.QtGui import QColor, QFont
 from PyQt5.uic import loadUi
 from PyQt5.QtWidgets import QDialog, QApplication, QAction, QStackedWidget, QMainWindow, QMenu, QToolButton, QLabel, \
     QScrollArea, QSizePolicy, QVBoxLayout, QHeaderView, QCheckBox, QLineEdit, QComboBox, QSpinBox, QTableView, \
-    QSpacerItem, QAbstractItemView, QTreeView, QPushButton, QListView
+    QSpacerItem, QAbstractItemView, QTreeView, QPushButton, QListView, QRadioButton
 from PyQt5.Qt import QStandardItem, QStandardItemModel, QWidget
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QModelIndex
 
 import sqlite3
 from queue import Queue
@@ -17,21 +17,21 @@ import math
 
 # MAIN THINGS TODO:
 #  Deck creation - done
-#  Review system and displaying flashcards - todo wed w/ daniel
+#  Review system and displaying flashcards - cover HTML w/ daniel
 #  Create ui windows to house this in the meantime, should prevent wasting any time in the session
 #   (this being the main window for editing flashcards, and windows for setting up formats for templates
 
-#  STATS WINDOWS
-#  Important - but not key functionality
+# STATS WINDOWS Important - but not key functionality - would certainly add to complexity due to aggregate functions,
+# try to get this working asap
 
-#  Templates (and note types) ^ part of displaying the flashcards
+#  Templates ^ part of displaying the flashcards - done, some testing done but do so more thoroughly later
 #      - will need to add a field to the cards table for format type, could remove template field, but could prove
 #      useful.
 #      - new formats table will need to reference a template, used when parsing user input to check for valid fields.
 #      - for this should replace templates combo box with a format sub-menu that opens up in a new window and changes
 #      the text on confirming a format in the sub-window
 
-# Client server socketing - needed
+# Client server socketing - (needed) - consider, if not added make sure to justify thoroughly and explain implementation
 #   - For this, it seems to be that whenever a signal is activated on the client side,
 #   relevant data passed to functions should be passed and executed on the server side, and any necessary data used in
 #   displaying sent back to the client
@@ -350,12 +350,63 @@ class Config(QStandardItem):
 
 
 class Template(QStandardItem):
-    def __init__(self, id, name, fields):
+    def __init__(self, id):
         super().__init__()
-        self.setText(name)
-        self.name = name
         self.id = id
-        self.fields = fields
+        self.fields = None
+        self.sortfield = None
+        self.styling = None
+        self.back = None
+        self.front = None
+        self.name = None
+        self.fields = None
+        self.load()
+        self.setText(self.name)
+
+    def load(self):
+        con = sqlite3.connect(database)
+        cur = con.cursor()
+        cur.execute("""SELECT name, fields, sortfield, front_format, back_format, styling FROM templates WHERE id = ?""", (self.id,))
+        self.name, self.fields, self.sortfield, self.front, self.back, self.styling = cur.fetchone()
+        cur.close()
+        con.close()
+
+    def addfield(self, field_name):
+        fields = self.fields.split(",")
+        fields.append(field_name)
+        self.fields = ",".join(fields)
+
+    def renamefield(self, old_name, new_name):
+        fields = self.fields.split(",")
+        fields[fields.index(old_name)] = new_name
+        self.fields = ",".join(fields)
+
+    def repositionfield(self, old_index, new_index):
+        fields = self.fields.split(",")
+        fields = repositionitem(fields, old_index, new_index)
+        self.fields = ",".join(fields)
+
+    def removefield(self, delfield):
+        fields = self.fields.split(",")
+        fields = [field for field in fields if field != delfield]
+        self.fields = ",".join(fields)
+
+def repositionitem(list, old_index, new_index):
+    if old_index == new_index:
+        return list
+
+    item = list[old_index]
+    if new_index < old_index:
+        # shift items down
+        for i in range(old_index, new_index, -1):
+            list[i] = list[i - 1]
+        list[new_index] = item
+    elif new_index > old_index:
+        # shift items up
+        for i in range(old_index, new_index, 1):
+            list[i] = list[i + 1]
+        list[new_index] = item
+    return list
 
 
 """WINDOW CLASSES"""
@@ -734,10 +785,6 @@ class DeckSelected(QMainWindow):
         self.deckoptionsbutton.clicked.connect(self.deckoptions)
         self.studybutton.clicked.connect(self.study)
 
-    # def back(self):
-    #     resetstack()
-    #     stack.setCurrentIndex(3)
-
     def deckoptions(self):
         self.optionswindow = DeckOptions(self.user, self.deck)
         self.optionswindow.show()
@@ -746,8 +793,7 @@ class DeckSelected(QMainWindow):
         self.study = Study(self.user, self.deck)
 
 
-# maybe create a study class that handles both of these and switches between the two
-
+# maybe create a study class that handles both front and back and switches between the two
 
 class Study:
     def __init__(self, user, deck):
@@ -800,7 +846,6 @@ class StudyBack(QMainWindow):
     def __init__(self):
         super().__init__()
         loadUi("studyback.ui", self)
-
 
 
 class DeckOptions(QWidget):
@@ -1157,6 +1202,7 @@ class CFGNameWindow(QWidget):
 
 class CardsMain(QMainWindow):
     # todo get filters working
+    # make sure a general search matches against all card data, not just sortfield, also best to split before matching
     def __init__(self, user):
         self.user = user
         super().__init__()
@@ -1324,7 +1370,10 @@ class CardsMain(QMainWindow):
             line_edit.setMaximumHeight(41)
             line_edit.setFont(font)
             line_edit.setPlaceholderText("")
-            line_edit.setText(self.editingcard.data[i])
+            if self.editingcard.data[i]:
+                line_edit.setText(self.editingcard.data[i])
+            else:
+                line_edit.setText("")
 
             if not editable:
                 line_edit.setReadOnly(True)
@@ -1366,9 +1415,7 @@ class CardsMain(QMainWindow):
 
 class AddCard(QMainWindow):
     def __init__(self, user):
-        self.formatswindow = None
         self.user = user
-        self.config = None
         super().__init__()
         loadUi("addcard.ui", self)
 
@@ -1382,44 +1429,30 @@ class AddCard(QMainWindow):
 
         self.scroll.setWidget(self.scrollAreaWidgetContents)
         self.scroll.setWidgetResizable(True)
-        # self.scroll.setMaximumHeight(491)
 
-        self.fill_templates_box()
         self.templatesbutton.clicked.connect(self.viewtemplates)
 
         self.fill_decks_box()
 
-        self.addcard.clicked.connect(self.add_card)
-
-    def fill_templates_box(self):
-        self.templatesbox.clear()
         con = sqlite3.connect(database)
         cur = con.cursor()
-        cur.execute("SELECT id, name, fields FROM templates")
-        templates = cur.fetchall()
-        try:
-            self.t_ids, self.t_names, self.t_fieldss = zip(*[(row[0], row[1], row[2]) for row in templates])
-        except:
-            self.t_fieldss = []
-            self.t_ids = []
-            self.t_names = []
-
-        for i in range(len(self.t_ids)):
-            template = Template(self.t_ids[i], self.t_names[i], self.t_fieldss[i])
-            self.templatesbox.addItem(template.name, template)
-
+        cur.execute("SELECT MIN (id) FROM templates WHERE created_uid = ?", (self.user.id,))
+        self.template = Template(cur.fetchone()[0])
         cur.close()
         con.close()
+        self.applytemplate()
+        self.templateswindow = None
 
-        self.fetch_template()
-        self.templatesbox.activated.connect(self.fetch_template)
+        self.addcard.clicked.connect(self.add_card)
 
-    def fetch_template(self):
+
+    def applytemplate(self):
+        self.templatesbutton.setText(self.template.name)
+
         for i in reversed(range(self.scrollWidgetContents_layout.count())):
             self.scrollWidgetContents_layout.itemAt(i).widget().deleteLater()
 
-        template = self.templatesbox.currentData()
-        split = template.fields.split(",")
+        split = self.template.fields.split(",")
         self.line_edits = []
         font = QFont()
         font.setPointSize(15)
@@ -1438,17 +1471,17 @@ class AddCard(QMainWindow):
             self.line_edits.append(line_edit)
 
     def viewtemplates(self):
-        self.formatswindow = FormatsWindow()
-        self.formatswindow.show()
-        self.formatswindow.selectbutton.clicked.connect(self.setformat())
+        self.templateswindow = TemplatesWindow(self.user, self.template)
+        self.templateswindow.show()
+        self.templateswindow.selectbutton.clicked.connect(self.settemplate)
 
-    def setformat(self):
-        formats = self.formatswindow.formatslist.format
-        self.formatswindow.set
-        t = QListView()
-        t.selectedIndexes()
-
-        pass
+    def settemplate(self):
+        self.template = self.templateswindow.templatesmodel.item(self.templateswindow.templateslist.currentIndex().row(), 0)
+        if self.template:
+            self.applytemplate()
+            self.templateswindow.hide()
+        else:
+            pass
 
     def fill_decks_box(self):
         self.decksbox.clear()
@@ -1467,7 +1500,7 @@ class AddCard(QMainWindow):
 
     def refresh(self):
         self.fill_decks_box()
-        self.fill_templates_box()
+        # self.fill_templates_box()
 
     def add_card(self):
         card_data = []
@@ -1486,11 +1519,9 @@ class AddCard(QMainWindow):
 
             d_idx = self.d_names.index(self.decksbox.currentText())
             deck_id = self.d_ids[d_idx]
-            t_idx = self.t_names.index(self.templatesbox.currentText())
-            template_id = self.t_ids[t_idx]
             cur.execute("""INSERT INTO cards (data, deck_id, template_id, modified, created_uid)
                             VALUES (?, ?, ?, ?, ?) RETURNING id""",
-                        (card_data, deck_id, template_id, time(), self.user.id))
+                        (card_data, deck_id, self.template.id, time(), self.user.id))
             cid = cur.fetchone()[0]
             cur.execute("""INSERT INTO user_cards (uid, cid, ivl, type, status, reps, lapses, odue)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)""", (self.user.id, cid, None, 0, 0, 0, 0, time()))
@@ -1512,17 +1543,443 @@ class AddCard(QMainWindow):
                 print(e)
 
 
-class FormatsWindow(QWidget):
+class TemplatesWindow(QWidget):
+    # todo add counts to each template text showing how many cards use the template
+    def __init__(self, user, template):
+        super().__init__()
+        loadUi("templates.ui", self)
+        self.user = user
+        self.initialtemplate = template
+        self.templatesmodel = QStandardItemModel()
+        self.loadtemplates()
+        self.backbutton.clicked.connect(self.hide)
+        self.addbutton.clicked.connect(self.addwindow)
+        self.renamebutton.clicked.connect(self.renamewindow)
+        self.fieldsbutton.clicked.connect(self.managefields)
+
+    def loadtemplates(self):
+        self.templatesmodel.clear()
+        con = sqlite3.connect(database)
+        cur = con.cursor()
+        cur.execute("SELECT id FROM templates WHERE created_uid = ?", (self.user.id,))
+        for fetch in cur.fetchall():
+            template = Template(fetch[0])
+            self.templatesmodel.appendRow(template)
+            # if template.id == self.initialtemplate.id:
+            #     print("here")
+            #     i = self.templatesmodel.rowCount()
+            #     print(i)
+            #     self.templateslist.selectionModel().setCurrentIndex(i)
+        cur.close()
+        con.close()
+        self.templateslist.setModel(self.templatesmodel)
+
+    def addwindow(self):
+        self.addtemplatewindow = AddTemplate(self.user)
+        self.addtemplatewindow.addbutton.clicked.connect(self.addtemplate)
+        self.addtemplatewindow.show()
+
+    def addtemplate(self):
+        template = self.addtemplatewindow.optionsmodel.item(self.addtemplatewindow.optionslist.currentIndex().row(), 0)
+        if not template:
+            # button doesnt do anything
+            return
+
+        self.addtemplatewindow.hide()
+        # to work out below
+        # self.setWindowFlag(Qt.WindowDoesNotAcceptFocus)
+        # self.setWindowState(Qt.Window)
+        self.templatenamewindow = NameWindow()
+        # can rewrite to use regex matching for more generalisation
+        if template.text() == "Add: Basic":
+            self.templatenamewindow.namelineedit.setText("Basic")
+        else:
+            self.templatenamewindow.namelineedit.setText(f"{template.name} copy")
+        self.templatenamewindow.cancelbutton.clicked.connect(lambda: self.cancel(self.templatenamewindow))
+        self.templatenamewindow.okbutton.clicked.connect(self.completeadd)
+        self.templatenamewindow.show()
+
+    def completeadd(self):
+        template = self.addtemplatewindow.optionsmodel.item(self.addtemplatewindow.optionslist.currentIndex().row(), 0)
+        name = self.templatenamewindow.namelineedit.text()
+        if template.text() == "Add: Basic":
+            addbasictemplate(self.user, name=name)
+        else:
+            con = sqlite3.connect(database)
+            cur = con.cursor()
+            cur.execute("""INSERT INTO templates (name, fields, sortfield, modified, created_uid) VALUES
+               (?, ?, ?, ?, ?)""", (name, template.fields, template.sortfield, time(), self.user.id))
+            # self.setWindowState(Qt.WindowActive)
+            con.commit()
+            cur.close()
+            con.close()
+        self.templatenamewindow.deleteLater()
+        self.loadtemplates()
+
+    def renamewindow(self):
+        template = self.templatesmodel.item(self.templateslist.currentIndex().row(), 0)
+        if not template:
+            return
+
+        self.renametemplatewindow = NameWindow()
+        self.renametemplatewindow.template = template
+        self.renametemplatewindow.okbutton.clicked.connect(self.rename)
+        self.renametemplatewindow.cancelbutton.clicked.connect(lambda: self.cancel(self.renametemplatewindow))
+        self.renametemplatewindow.namelineedit.setText(template.name)
+        self.renametemplatewindow.show()
+
+    def rename(self):
+        new_name = self.renametemplatewindow.namelineedit.text()
+        con = sqlite3.connect(database)
+        cur = con.cursor()
+        cur.execute("""UPDATE templates SET name = ? WHERE id = ?""", (new_name, self.renametemplatewindow.template.id))
+        con.commit()
+        cur.close()
+        con.close()
+        self.renametemplatewindow.deleteLater()
+        self.loadtemplates()
+
+    def cancel(self, window):
+        window.deleteLater()
+        self.loadtemplates()
+        # self.setWindowState(Qt.WindowActive)
+
+    def managefields(self):
+        template = self.templatesmodel.item(self.templateslist.currentIndex().row(), 0)
+        if not template:
+            return
+        self.templatefieldswindow = TemplateFieldsWindow(template)
+        self.templatefieldswindow.savebutton.clicked.connect(self.savetemplatefields)
+        self.templatefieldswindow.cancelbutton.clicked.connect(lambda: self.cancel (self.templatefieldswindow))
+        self.templatefieldswindow.show()
+        pass
+
+    def savetemplatefields(self):
+        con = sqlite3.connect(database)
+        cur = con.cursor()
+        # utilising a FIFO queue data structure here to handle all the executions after saving, could not do so in
+        # the other class as this would require changes being commited before the save button was actually clicked,
+        # due to the potential for needing to change the cards' data fields
+        for instruction, params in zip(self.templatefieldswindow.instructions, self.templatefieldswindow.params):
+            if instruction == "CARD_ADD_FIELD":
+                print("adding field")
+                cid, index = params
+                cur.execute("SELECT data FROM cards WHERE id = ?", (cid,))
+                data = cur.fetchone()[0]
+                data = data.split(",")
+                data.append(",")
+                data = ",".join(data)
+                # print(cid, data)
+                cur.execute("""UPDATE cards SET data = ? WHERE id = ?""", (data, cid))
+            elif instruction == "CARD_DELETE_FIELD":
+                cid, delindex = params
+                cur.execute("SELECT data FROM cards WHERE id = ?", (cid,))
+                data = cur.fetchone()[0]
+                data = data.split(",")
+                del data[delindex]
+                data = ",".join(data)
+                # print(cid, data)
+                cur.execute("""UPDATE cards SET data = ? WHERE id = ?""", (data, cid))
+            elif instruction == "CARD_REPOS_FIELD":
+                print("repositioning field")
+                cid, old_index, new_index = params
+                cur.execute("SELECT data FROM cards WHERE id = ?", (cid,))
+                data = cur.fetchone()[0]
+                data = data.split(",")
+                repositionitem(data, old_index, new_index)
+                data = ",".join(data)
+                # print(cid, data)
+                cur.execute("""UPDATE cards SET data = ? WHERE id = ?""", (data, cid))
+            else:
+                print("executing")
+                print(instruction, params)
+                cur.execute(instruction, params)
+
+            # TODO handle these if... elif ... else execute as SQL
+            # todo here, allow fields to be added and deleted,
+            #  when this happens will want to update all cards that are connected to the template, and update the data of
+            #  any changed fields, if indexes change, will want to change the index of data, etc.
+            #  Delete -> Delete Data and field
+            #  Add -> Add field and empty data slot - Also need to check field name not in use
+            #  Reposition -> Change position/index of field and data
+            #  Rename -> Change field name
+            #  Sort by this field -> change sortfield, make sure this changes with the ui aswell
+            #  Should be sufficient (obviously cancel and save to discard/commit changes) - to cancel just call load
+            #  template again
+
+        con.commit()
+        cur.close()
+        con.close()
+        self.templatefieldswindow.deleteLater()
+        self.loadtemplates()
+
+
+class NameWindow(QWidget):
     def __init__(self):
         super().__init__()
-        loadUi("formats.ui", self)
-        self.format = None
-
-    def loadformats(self):
-
+        loadUi("namewindow.ui", self)
+        self.template = None
+        self.cancelbutton.clicked.connect(self.deleteLater)
 
 
+class TemplateFieldsWindow(QWidget):
+    # todo add delete functionality, add a prompt (alert box) on pressing delete notifying the user of how many cards
+    #  the deletion affects, (iterate through cards with the template to check if they have dat in that index)
+    def __init__(self, template):
+        super().__init__()
+        loadUi("templatefields.ui", self)
+        self.template = template
 
+        self.fieldsmodel = QStandardItemModel()
+        self.fieldslist.setModel(self.fieldsmodel)
+        self.fieldslist.selectionModel().selectionChanged.connect(self.fieldselected)
+
+
+        self.sortfieldradio.clicked.connect(self.changesortfield)
+        self.addbutton.clicked.connect(self.addwindow)
+        self.renamebutton.clicked.connect(self.renamewindow)
+        self.reposbutton.clicked.connect(self.repositionwindow)
+        self.deletebutton.clicked.connect(self.deletefield)
+
+        # idx = self.fieldsmodel.index(0, 0)
+        # self.fieldslist.selectionModel().setCurrentIndex(idx, self.fieldslist.selectionModel().SelectionFlags())
+        # self.fieldslist.setCurrentIndex(idx)
+
+        self.fillfields()
+        self.selectedfield = self.fieldsmodel.item(self.fieldslist.currentIndex().row(), 0)
+
+        self.instructions = []
+        self.params = []
+
+    def fillfields(self):
+        self.fieldsmodel.clear()
+        i = 1
+        for field in self.template.fields.split(","):
+            self.fieldsmodel.appendRow(QStandardItem(f"{i}: {field}"))
+            i += 1
+
+    def fieldselected(self):
+        self.selectedfield = new_string = re.sub(r"^\d+: ", "", self.fieldsmodel.item(self.fieldslist.currentIndex().row(), 0).text())
+        if self.selectedfield == self.template.sortfield:
+            self.sortfieldradio.setChecked(True)
+        else:
+            self.sortfieldradio.setChecked(False)
+
+    def changesortfield(self):
+        self.template.sortfield = self.selectedfield
+        self.instructions.append("""UPDATE templates SET sortfield = ? WHERE id = ?""")
+        self.params.append((self.template.sortfield, self.template.id))
+
+    def addwindow(self):
+        self.namewindow = NameWindow()
+        self.namewindow.okbutton.clicked.connect(self.addfield)
+        self.namewindow.show()
+
+    def addfield(self):
+        field_name = self.namewindow.namelineedit.text()
+        if not field_name:
+            self.namewindow.errorlabel.setText("Field must have a name")
+            return
+        elif field_name in self.template.fields.split(","):
+            self.namewindow.errorlabel.setText("Field name already in use")
+            return
+        self.template.addfield(field_name)
+        self.instructions.append("""UPDATE templates SET fields = ? WHERE id = ?""")
+        self.params.append((self.template.fields, self.template.id))
+
+        con = sqlite3.connect(database)
+        cur = con.cursor()
+        cur.execute("""SELECT id FROM cards WHERE template_id = ?""", (self.template.id,))
+        field_pos = self.template.fields.split(",").index(field_name)
+        for fetch in cur.fetchall():
+            cid = fetch[0]
+            self.instructions.append("CARD_ADD_FIELD")
+            # work out a function to handle this
+            # field pos might not be necessary
+            self.params.append((cid, field_pos))
+        cur.close()
+        con.close()
+        self.fillfields()
+        self.namewindow.deleteLater()
+
+    def renamewindow(self):
+        if not self.selectedfield:
+            # output message?
+            return
+        old_name = self.selectedfield
+        self.namewindow = NameWindow()
+        self.namewindow.okbutton.clicked.connect(lambda: self.renamefield(old_name))
+        self.namewindow.show()
+        self.namewindow.namelineedit.setText(self.selectedfield)
+
+    def renamefield(self, old_name):
+        new_name = self.namewindow.namelineedit.text()
+        if new_name == old_name:
+            self.namewindow.deleteLater()
+            self.loadtemplates()
+            return
+        if not new_name:
+            self.namewindow.errorlabel.setText("Field must have a name")
+            return
+        elif new_name in self.template.fields.split(","):
+            self.namewindow.errorlabel.setText("Field name already in use")
+            return
+        self.template.renamefield(old_name, new_name)
+        self.instructions.append("""UPDATE templates SET fields = ? WHERE id = ?""")
+        self.params.append((self.template.fields, self.template.id))
+        self.namewindow.deleteLater()
+        self.fillfields()
+
+    def repositionwindow(self):
+        if not self.selectedfield:
+            # output message?
+            return
+        old_index = self.template.fields.split(",").index(self.selectedfield)
+        self.reposwindow = RepositionFieldWindow(self.template)
+        self.reposwindow.okbutton.clicked.connect(lambda: self.repositionfield(old_index))
+        self.reposwindow.show()
+
+    def repositionfield(self, old_index):
+        new_index = self.reposwindow.namelineedit.text()
+        if not new_index:
+            self.reposwindow.errorlabel.setText("Please enter a position")
+            return
+        try:
+            new_index = int(new_index) - 1
+            if not 0 <= new_index <= self.reposwindow.count - 1:
+                self.reposwindow.errorlabel.setText("Please enter a value within the range")
+                return
+        except ValueError:
+            self.reposwindow.errorlabel.setText("Please enter an integer value")
+            return
+        self.template.repositionfield(old_index, new_index)
+        self.instructions.append("""UPDATE templates SET fields = ? WHERE id = ?""")
+        self.params.append((self.template.fields, self.template.id))
+
+        con = sqlite3.connect(database)
+        cur = con.cursor()
+        cur.execute("""SELECT id FROM cards WHERE template_id = ?""", (self.template.id,))
+        for fetch in cur.fetchall():
+            cid = fetch[0]
+            self.instructions.append("CARD_REPOS_FIELD")
+            # work out a function to handle this
+            # field pos might not be necessary
+            self.params.append((cid, old_index, new_index))
+        cur.close()
+        con.close()
+
+        self.reposwindow.deleteLater()
+        self.fillfields()
+
+    def deletefield(self):
+        if not self.selectedfield:
+            return
+        deletewindow = DeleteFieldWindow(self, self.template, self.selectedfield)
+        deletewindow.buttonBox.accepted.connect(self.delete)
+        deletewindow.exec()
+
+    def delete(self):
+        delfield = self.selectedfield
+        field_pos = self.template.fields.split(",").index(delfield)
+        self.template.removefield(delfield)
+
+        self.instructions.append("""UPDATE templates SET fields = ? WHERE id = ?""")
+        self.params.append((self.template.fields, self.template.id))
+
+        con = sqlite3.connect(database)
+        cur = con.cursor()
+        cur.execute("""SELECT id FROM cards WHERE template_id = ?""", (self.template.id,))
+        for fetch in cur.fetchall():
+            cid = fetch[0]
+            self.instructions.append("CARD_DELETE_FIELD")
+            # work out a function to handle this
+            # field pos might not be necessary
+            self.params.append((cid, field_pos))
+        cur.close()
+        con.close()
+        self.fillfields()
+
+    def cancel(self):
+        self.deleteLater()
+
+
+class RepositionFieldWindow(QWidget):
+    def __init__(self, template):
+        super().__init__()
+        loadUi("namewindow.ui", self)
+        # repurposing same file but changing text
+        self.count = len(template.fields.split(','))
+        self.label.setText(f"Enter New Position ({1} - {self.count}):")
+        self.cancelbutton.clicked.connect(self.deleteLater)
+
+
+class DeleteFieldWindow(QDialog):
+    def __init__(self, parent_wnd, template, field):
+        super().__init__(parent_wnd)
+        loadUi("deletetemplate.ui", self)
+        self.setFixedSize(400, 200)
+        con = sqlite3.connect(database)
+        cur = con.cursor()
+        cur.execute("""SELECT COUNT (id) FROM cards WHERE template_id = ?""", (template.id,))
+        totalcount = cur.fetchone()[0]
+        cur.execute("""SELECT c.data, d.isPublic FROM cards c INNER JOIN decks d ON c.deck_id = d.id WHERE 
+        template_id = ?""", (template.id,))
+        affected_idx = template.fields.split(',').index(field)
+        affectspublic = False
+        # affectedcount = 0
+        for fetch in cur.fetchall():
+            data = fetch[0].split(",")
+            public = fetch[1]
+            # try:
+            #     if data[affected_idx]:
+            #         affectedcount += 1
+            # except IndexError:
+            #     # is passing here ok, should I just delete the section? ...
+            #     pass
+            if public:
+                affectspublic = True
+
+        self.totalnoteslabel.setText(f"Delete field '{field}' from {totalcount} notes")
+        # self.noteswithdatalabel.setText(f"Of which {affectedcount} contain data in this field")
+        if affectspublic:
+            self.warninglabel.setText("Deleting this field will affect decks which you have published!")
+        self.buttonBox.rejected.connect(self.deleteLater)
+
+
+def addbasictemplate(user, name="Basic"):
+    # todo - come back and include formatting when done
+    print("adding basic")
+    con = sqlite3.connect(database)
+    cur = con.cursor()
+    cur.execute("""INSERT INTO templates (name, fields, sortfield, modified, created_uid) VALUES
+    (?, ?, ?, ?, ?)""", (name, "Front,Back", "Front", time(), user.id))
+    cur.close()
+    con.commit()
+    con.close()
+
+
+class AddTemplate(QWidget):
+    def __init__(self, user):
+        super().__init__()
+        loadUi("addtemplate.ui", self)
+        self.user = user
+        self.optionsmodel = QStandardItemModel()
+        self.backbutton.clicked.connect(self.hide)
+        self.filloptions()
+
+    def filloptions(self):
+        self.optionsmodel.clear()
+        self.optionsmodel.appendRow(QStandardItem("Add: Basic"))
+        con = sqlite3.connect(database)
+        cur = con.cursor()
+        cur.execute("SELECT id FROM templates WHERE created_uid = ?", (self.user.id,))
+        for fetch in cur.fetchall():
+            template = Template(fetch[0])
+            template.setText(f"Clone: {template.name}")
+            self.optionsmodel.appendRow(template)
+        self.optionslist.setModel(self.optionsmodel)
+        cur.close()
+        con.close()
 
 
 class StatsPage(QMainWindow):
