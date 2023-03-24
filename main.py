@@ -5,9 +5,11 @@ from PyQt5.QtGui import QColor, QFont
 from PyQt5.uic import loadUi
 from PyQt5.QtWidgets import QDialog, QApplication, QAction, QStackedWidget, QMainWindow, QMenu, QToolButton, QLabel, \
     QScrollArea, QSizePolicy, QVBoxLayout, QHeaderView, QCheckBox, QLineEdit, QComboBox, QSpinBox, QTableView, \
-    QSpacerItem, QAbstractItemView, QTreeView, QPushButton, QListView, QRadioButton
+    QSpacerItem, QAbstractItemView, QTreeView, QPushButton, QListView, QRadioButton, QTextEdit
 from PyQt5.Qt import QStandardItem, QStandardItemModel, QWidget
 from PyQt5.QtCore import Qt, QModelIndex
+from PyQt5.QtWebEngineWidgets import QWebEngineView
+
 
 import sqlite3
 from queue import Queue
@@ -17,7 +19,11 @@ import math
 
 # MAIN THINGS TODO:
 #  Deck creation - done
-#  Review system and displaying flashcards - cover HTML w/ daniel
+#  Review system and displaying flashcards - covered
+#  todo - storing html and escaped fields, what do i need to have. how to enable a dark mode for the html page,
+#   + how to go about storing sound and image files in a database or somewhere else and referencing them
+#  need to write some kind of interpreter for html where fields are converted into their data.
+
 #  Create ui windows to house this in the meantime, should prevent wasting any time in the session
 #   (this being the main window for editing flashcards, and windows for setting up formats for templates
 
@@ -390,6 +396,7 @@ class Template(QStandardItem):
         fields = self.fields.split(",")
         fields = [field for field in fields if field != delfield]
         self.fields = ",".join(fields)
+
 
 def repositionitem(list, old_index, new_index):
     if old_index == new_index:
@@ -1556,6 +1563,7 @@ class TemplatesWindow(QWidget):
         self.addbutton.clicked.connect(self.addwindow)
         self.renamebutton.clicked.connect(self.renamewindow)
         self.fieldsbutton.clicked.connect(self.managefields)
+        self.layoutbutton.clicked.connect(self.editlayout)
 
     def loadtemplates(self):
         self.templatesmodel.clear()
@@ -1712,6 +1720,172 @@ class TemplatesWindow(QWidget):
         con.close()
         self.templatefieldswindow.deleteLater()
         self.loadtemplates()
+
+    def editlayout(self):
+        template = self.templatesmodel.item(self.templateslist.currentIndex().row(), 0)
+        if not template:
+            return
+        self.layoutwindow = LayoutWindow(template)
+        self.layoutwindow.savebutton.clicked.connect(self.savetemplatelayout)
+        self.layoutwindow.cancelbutton.clicked.connect(lambda: self.cancel(self.layoutwindow))
+        self.layoutwindow.show()
+
+    def savetemplatelayout(self):
+        # updates into sql table...
+
+        self.layoutwindow.deleteLater()
+        pass
+
+
+class LayoutWindow(QWidget):
+    def __init__(self, template):
+        # do I want to load the two widgets separately and add them to the layout if there is an issue with the
+        # layout text (e.g. {{ missing }} or field doesn't exist, update preview to show this, use a flag variable to
+        # check for errors and if save clicked with an error - open up a dialog to prompt the user to change the
+        # template
+        super().__init__()
+        loadUi("templatelayout.ui", self)
+        self.preview = QWebEngineView()
+        self.previewwidget.layout().addWidget(self.preview, 2)
+        self.previewwidget.layout().setStretch(0, 0)
+        self.previewwidget.layout().setStretch(1, 0)
+        self.previewwidget.layout().setStretch(2, 1)
+        self.template = template
+
+        self.formatfrontbutton.toggle()
+        self.changeediting()
+
+        self.formatfrontbutton.clicked.connect(self.changeediting)
+        self.formatbackbutton.clicked.connect(self.changeediting)
+        self.formatstylingbutton.clicked.connect(self.changeediting)
+        self.frontpreviewbutton.clicked.connect(self.showpreview)
+        self.backpreviewbutton.clicked.connect(self.showpreview)
+        self.formattextedit.textChanged.connect(self.update)
+
+    def changeediting(self):
+
+        self.formattextedit.blockSignals(True)
+        if self.formatfrontbutton.isChecked():
+            if not self.frontpreviewbutton.isChecked():
+                self.frontpreviewbutton.setChecked(True)
+            self.formattextedit.setPlainText(f"{self.template.front or ''}")
+
+        elif self.formatbackbutton.isChecked():
+            if not self.backpreviewbutton.isChecked():
+                self.backpreviewbutton.setChecked(True)
+
+            self.formattextedit.setPlainText(f"{self.template.back or ''}")
+
+        else:
+            self.formattextedit.setPlainText(f"{self.template.styling or ''}")
+        self.formattextedit.blockSignals(False)
+        self.update()
+
+    def update(self):
+        if self.formatfrontbutton.isChecked():
+            self.template.front = self.formattextedit.toPlainText()
+        elif self.formatbackbutton.isChecked():
+            self.template.back = self.formattextedit.toPlainText()
+        else:
+            self.template.styling = self.formattextedit.toPlainText()
+        self.showpreview()
+
+    def showpreview(self):
+
+        # check for {{
+        # except no }}, set html to show an error
+        # except field doesn't exist to show error
+        # parse field as html
+        # move selection to processpreview
+        if self.frontpreviewbutton.isChecked():
+            preview = self.processpreview(1)
+            self.preview.setHtml(preview)
+
+        elif self.backpreviewbutton.isChecked():
+            preview = self.processpreview(0)
+            self.preview.setHtml(preview)
+
+    def processpreview(self, side):
+        if side:
+            field_error, missing_brackets_error, front = self.extractfields(1)
+            if field_error:
+                # could pass the field as field error
+                preview = "Field Doesn't exist"
+            elif missing_brackets_error:
+                preview = "'{{' is missing closing '}}'"
+            else:
+                preview = f"<head><style>{self.template.styling}</style></head> <body id=card>{front}</body>"
+            return preview
+        else:
+            field_error, missing_brackets_error, back = self.extractfields(0)
+            if field_error:
+                # could pass the field as field error
+                preview = "Field Doesn't exist"
+            elif missing_brackets_error:
+                preview = "'{{' is missing closing '}}'"
+
+            else:
+                preview = preview = f"<head><style>{self.template.styling}</style></head> <body id=card>{back}</body>"
+            return preview
+        pass
+
+    def extractfields(self, side):
+        field_error = False
+        missing_brackets_error = False
+        if side:
+            front = re.sub(r"\n", "", self.template.front)
+            match = True
+
+            while match:
+                # print(f"front: {front}")
+                match = re.search(r"\{\{(.+?)\}\}", front)
+                # print(match)
+                if match:
+                    match = match.group(0)
+                    # print(f"match: ({match[2:-2]})")
+                    if match[2:-2] not in self.template.fields.split(","):
+                        # print(match[2:-2])
+
+                        field_error = True
+                        return field_error, missing_brackets_error, front
+                    else:
+                        front = re.sub(match, f"({match[2:-2]})", front)
+
+            match = re.search(r"\{\{", front)
+            if match:
+                missing_brackets_error = True
+                return field_error, missing_brackets_error, front
+            return field_error, missing_brackets_error, front
+
+        else:
+            back = re.sub(r"\n", "", self.template.back)
+            match = True
+
+            while match:
+                # print(f"back: {back}")
+                match = re.search(r"\{\{(.+?)\}\}", back)
+                # print(match)
+                if match:
+                    match = match.group(0)
+                    # print(f"match: ({match[2:-2]})")
+                    if match[2:-2] == "FrontSide":
+                        # recursion
+                        field_error, missing_brackets_error, front = self.extractfields(1)
+                        back = re.sub(match, f"{front}", back)
+                    elif match[2:-2] not in self.template.fields.split(","):
+
+                        field_error = True
+                        return field_error, missing_brackets_error, back
+                    else:
+
+                        back = re.sub(match, f"({match[2:-2]})", back)
+
+            match = re.search(r"\{\{", back)
+            # print(f"bracketserror: {match}")
+            if match:
+                missing_brackets_error = True
+                return field_error, missing_brackets_error, back
+            return field_error, missing_brackets_error, back
 
 
 class NameWindow(QWidget):
