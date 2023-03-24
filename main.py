@@ -10,12 +10,79 @@ from PyQt5.Qt import QStandardItem, QStandardItemModel, QWidget
 from PyQt5.QtCore import Qt, QModelIndex
 from PyQt5.QtWebEngineWidgets import QWebEngineView
 
-
 import sqlite3
 from queue import Queue
 from time import time
 import datetime
 import math
+
+
+"""
+NOTES FOR MR HUBBARD - Current Progress with sections of the program
+
+DECKS:
+- implemented:
+-- adding decks, selecting configs for review
+- todo:
+-- deletion, renaming
+
+CARDS:
+- implemented:
+-- adding, editing and browsing cards
+- todo:
+-- deletion, deck (and possibly template) migration, filters when browsing, integration of multimedia (imgs, audio)
+
+Configs:
+- implemented:
+-- Addition, cloning, renaming and deletion, configuration of all settings currently in use.
+- todo:
+-- nothing I can think of as of now, maybe consider more settings for configuration down the line
+
+Templates:
+- implemented:
+-- Addition, renaming, deletion. 
+-- Adding, renaming, deletion and repositioning of fields + selection of sortfield.
+-- Editing and styling of formats, validity checking (of fields and syntax) and rendering/displaying a preview as HTML in the ui
+-- Parsing of templates when displaying flashcards in review section
+- todo
+-- again, handling of multimedia once storage and integration of this is worked out
+
+Browsing/Public Decks:
+- implemented:
+-- publishing of decks, and the ability for other users to view and add published decks to their library, aswell 
+    as filter public dekcs via a text input
+- todo:
+-- check functionality when reviewing a shared deck, and potentially add optional syncronisation if the creator makes changes
+-- also potentially add an option to allow users to copy a deck (which adds it to their library as if they created it), and the functionality behind this
+
+Login + Account Creation:
+- implemented:
+-- user account creation, password hashing and storing of details in database to allow for future login, 
+-- input checking and error handling in these window
+- todo:
+-- possibly add regex validity checking for emails, currently accepts any string
+
+Study/Review Of Flashcards:
+- implemented:
+-- displaying of text based flashcard fields
+-- queue formation, interval calculation and updating of various fields pertaining to spaced the spaced repetition algorithm
+-- logging of reviews to be utilised when fetching statistics
+- todo:
+-- again intergrate multimedia content
+-- also thoroughly bug test this section, as of writing it seems as though there might be an error with queue formation
+-- rewrite where necessary ^
+
+Statistics:
+- todo:
+-- decide on what statistics to display and how to go about doing this within the ui
+
+Other Features to be Considered once Minimum Completion reached:
+- Importing of delimited files into flashcards
+- Client Server Socketing
+- User Profiles and some kind of Social System
+- Adding salt values to password hashing
+
+"""
 
 # MAIN THINGS TODO:
 #  Deck creation - done
@@ -24,20 +91,21 @@ import math
 #   + how to go about storing sound and image files in a database or somewhere else and referencing them
 #  need to write some kind of interpreter for html where fields are converted into their data.
 
-#  Create ui windows to house this in the meantime, should prevent wasting any time in the session
-#   (this being the main window for editing flashcards, and windows for setting up formats for templates
 
 # STATS WINDOWS Important - but not key functionality - would certainly add to complexity due to aggregate functions,
 # try to get this working asap
 
+# also want session statistics maybe?
+
 #  Templates ^ part of displaying the flashcards - done, some testing done but do so more thoroughly later
 #      - will need to add a field to the cards table for format type, could remove template field, but could prove
-#      useful.
+#      useful. - changed, formats part of template, no multiple note format types as of now
 #      - new formats table will need to reference a template, used when parsing user input to check for valid fields.
 #      - for this should replace templates combo box with a format sub-menu that opens up in a new window and changes
-#      the text on confirming a format in the sub-window
+#      the text on confirming a format in the sub-window - ignore
+#
 
-# Client server socketing - (needed) - consider, if not added make sure to justify thoroughly and explain implementation
+# Client server socketing - consider, if not added make sure to justify thoroughly and explain implementation
 #   - For this, it seems to be that whenever a signal is activated on the client side,
 #   relevant data passed to functions should be passed and executed on the server side, and any necessary data used in
 #   displaying sent back to the client
@@ -48,6 +116,9 @@ import math
 #  Add salt values to SHA-256 hash func - low priority, but maybe important for justification
 #       -other possilbe justification is to create a hash function where you know exactly what is going on, despite
 #       possible security flaws
+# USING python secrets module to generate salt values to be stored with passwords
+# secrets.token_hex(nbytes = 32)
+
 
 # TODO - whenever a card is added/deleted to a public deck, can update for all users by checking the user_cards table
 #  to see if the connection exists for all users with a user_decks connection to that card's parent deck
@@ -60,6 +131,61 @@ import math
 
 # todo - consider adding another table linked to templates which organises how templates are displayed
 # this is referenced above
+
+
+basictemplate_front = """{{Front}}"""
+basictemplate_back = """{{FrontSide}}
+<hr>
+{{Back}}"""
+basictemplate_styling = """.card {
+  font-family: arial;
+  font-size: 20px;
+  text-align: center;
+  color: white;
+  background-color: rgb(50,50,50);
+}}
+"""
+basictemplate_fields = 'Front,Back'
+basictemplate_sort = 'Front'
+
+
+def addbasictemplate(uid, cur):
+    cur.execute(
+        """INSERT INTO templates (fields, sortfield, modified, created_uid, front_format, back_format, styling, name) VALUES 
+        (?, ?, ?, ?, ?, ?, ?, ?)""", (basictemplate_fields, basictemplate_sort, time(), uid, basictemplate_front,
+                                   basictemplate_back, basictemplate_styling, 'Basic'))
+
+
+default_config_insert = """INSERT INTO configs (
+                                                name,
+                                                lapse_delays,
+                                                lapse_percent,
+                                                leech_fails,
+                                                max_ivl,
+                                                min_ivl,
+                                                new_delays,
+                                                new_grad_ivls,
+                                                new_init_ef,
+                                                new_per_day,
+                                                rev_easy_factor,
+                                                rev_hard_factor,
+                                                rev_per_day,
+                                                uid)
+                                            VALUES (
+                                                'default',
+                                                10,
+                                                50,
+                                                8,
+                                                36500,
+                                                1,
+                                                '1,10',
+                                                '1,4',
+                                                250,
+                                                10,
+                                                130,
+                                                120,
+                                                200,
+                                                ?)"""
 
 
 class User:
@@ -88,71 +214,6 @@ class Deck(QStandardItem):
         self.fetchdata()
         self.setText(self.name)
 
-        """SELECT ud.id, d.name, d.desc, u.username FROM decks d INNER JOIN user_decks ud ON d.id 
-                        = ud.deck_id INNER JOIN users u ON d.created_uid = u.id WHERE d.isPublic = 1 AND isDeleted = 0 AND 
-                        ud.uid = d.created_uid"""
-
-    def review(self):
-        review = Review(self.sr, self)
-        review.review()
-
-    def add_card(self):
-        # todo when adding a card maybe add it for all other users with access to the deck in user_decks.
-        con = sqlite3.connect(database)
-        cur = con.cursor()
-        cur.execute("SELECT created_uid FROM decks WHERE id = ?", (self.id,))
-        if self.user.id != cur.fetchone()[0]:
-            print("You are not the creator of this deck")
-            return
-        cur.execute("SELECT id, name, fields FROM templates")
-        templates = cur.fetchall()
-        tids = []
-        print("TEMPLATES")
-        for template in templates:
-            tids.append(template[0])
-            print(f"{template[0]} - {template[1]} | Fields: {template[2].split(',')}")
-        template_id = None
-        print(tids)
-        while template_id not in tids:
-            template_id = int(input("select template id..."))
-            if template_id not in tids:
-                print("invalid input")
-        cur.execute("""SELECT fields FROM templates WHERE id = ?""", [template_id])
-        fields = cur.fetchone()[0]
-        card_data = []
-        print(fields.split(","))
-        for field in fields.split(","):
-            card_data.append(input(f"Input data for {field}:"))
-        card_data = ",".join(card_data)
-        print(card_data)
-        cur.execute("""INSERT INTO cards (data, deck_id, template_id, modified, created_uid)
-                VALUES (?, ?, ?, ?, ?) RETURNING id""", (card_data, self.id, template_id, time(), self.user.id))
-        cid = cur.fetchone()[0]
-        cur.execute("""INSERT INTO user_cards (uid, cid, ef, ivl, type, status, reps, lapses, odue)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""", (self.user.id, cid, self.base_ef, None, 0, 0, 0, 0, time()))
-        # set left to no of deck learning steps
-        con.commit()
-        cur.close()
-        con.close()
-
-    def configure_review_settings(self):
-        # steps for when a card is in the learning phase - allow user to have as many steps of whatever intervals as
-        # desired, if fail - card resets to first interval, if easy, immediately graduated. Also options for
-        # graduating interval and easy interval.
-        # Card base ease factor (recommended to be kept at 250%). New cards/day, order in which they are shown
-        # Max daily reviews,
-        # Lapse settings (when again is hit) - lapse steps, lapse interval (of previous interval) - what good interval becomes
-        # Min interval, (possibly leeches).
-        # reviews - hard interval, max interval, interval modifier (scalar multiple in interval calcs)
-        # Easy bonus - easy interval multiplier.
-        # (Bury related cards, not sure how you would detect this?)
-        # Allow users to configure settings presets, or have them change them individually for each deck?
-        # Could utilise join queries and have tables: settings (id, user, decks? or decks_settings pair table, settings)
-        # or for the latter, just a single settings table (id, deck_id, user, settings...)
-        # options to change base ease factor, multiplier, etc.
-
-        pass
-
     def fetchdata(self):
         con = sqlite3.connect(database)
         cur = con.cursor()
@@ -161,7 +222,8 @@ class Deck(QStandardItem):
         fetch = cur.fetchone()
         self.name, self.did, self.desc, self.config_id, self.public, self.creator_id, self.isDeleted = fetch
         self.config = Config(self.config_id)
-        cur.execute("""SELECT COUNT (c.id) FROM cards c INNER JOIN decks d ON c.deck_id = d.id WHERE d.id = ?""", (self.did,))
+        cur.execute("""SELECT COUNT (c.id) FROM cards c INNER JOIN decks d ON c.deck_id = d.id WHERE d.id = ?""",
+                    (self.did,))
         self.cardcount = cur.fetchone()[0]
         cur.close()
         con.close()
@@ -198,7 +260,6 @@ class Flashcard(QStandardItem):
 
         self.id = id
         self.cid = None
-        self.zip = None
         self.fetch_attributes()
 
         sortFieldData = self.data[self.fields.index(self.sortfield)]
@@ -228,20 +289,23 @@ class Flashcard(QStandardItem):
                 WHERE u.id = ?
                 """, (self.id,))
 
-        self.cid, self.data, self.deck_id, self.modified, self.template, self.creator_id, self.ease_factor, self.interval, self.lapses, self.left, \
+        self.cid, self.data, self.deck_id, self.modified, self.template_id, self.creator_id, self.ease_factor, self.interval, self.lapses, self.left, \
             self.status, self.reps, self.type, self.due, self.original_due = cur.fetchone()
+
+
         cur.execute("""SELECT fields, sortfield
                                 FROM templates
                                 WHERE id = ?
-                                """, [self.template])
+                                """, [self.template_id])
         self.fields, self.sortfield = cur.fetchone()
 
         self.fields = self.fields.split(",")
         self.data = self.data.split(",")
 
-        # can you combine these 2 commands?
 
         self.zip = dict(zip(self.fields, self.data))
+
+        # can you combine these 2 commands?
         cur.close()
         con.close()
 
@@ -267,10 +331,6 @@ class Flashcard(QStandardItem):
         con.commit()
         cur.close()
         con.close()
-
-    def delete(self):
-        pass
-        # todo - want to transfer data to a temporary deletion table before actually deleting
 
     def review_update(self, new_ivl, new_ef, new_due):
         con = sqlite3.connect(database)
@@ -348,8 +408,9 @@ class Config(QStandardItem):
         name = ?
         WHERE id = ?
         """, (self.new_delays, self.new_grad_ivls, self.new_init_ef, self.new_per_day, self.rev_per_day, \
-            self.rev_easy_factor, self.rev_hard_factor, self.max_ivl, self.lapse_delays, self.lapse_percent, self.min_ivl, \
-            self.leech_fails, self.name, self.id))
+              self.rev_easy_factor, self.rev_hard_factor, self.max_ivl, self.lapse_delays, self.lapse_percent,
+              self.min_ivl, \
+              self.leech_fails, self.name, self.id))
         con.commit()
         cur.close()
         con.close()
@@ -372,7 +433,9 @@ class Template(QStandardItem):
     def load(self):
         con = sqlite3.connect(database)
         cur = con.cursor()
-        cur.execute("""SELECT name, fields, sortfield, front_format, back_format, styling FROM templates WHERE id = ?""", (self.id,))
+        cur.execute(
+            """SELECT name, fields, sortfield, front_format, back_format, styling FROM templates WHERE id = ?""",
+            (self.id,))
         self.name, self.fields, self.sortfield, self.front, self.back, self.styling = cur.fetchone()
         cur.close()
         con.close()
@@ -544,41 +607,15 @@ class CreateAccount(QDialog):
                     self.error.setText("Username already in use, please login")
             else:
                 pw_hash = sha_256(password)
+                # creating user
                 cur.execute("""INSERT INTO users (username, password_hash, email, doc, dom) 
                     VALUES (?, ?, ?, ?, ?) RETURNING id""", (username, pw_hash, email, time(), time())
                             )
                 uid = cur.fetchone()[0]
-                cur.execute("""INSERT INTO configs (
-                                                name,
-                                                lapse_delays,
-                                                lapse_percent,
-                                                leech_fails,
-                                                max_ivl,
-                                                min_ivl,
-                                                new_delays,
-                                                new_grad_ivls,
-                                                new_init_ef,
-                                                new_per_day,
-                                                rev_easy_factor,
-                                                rev_hard_factor,
-                                                rev_per_day,
-                                                uid)
-                                            VALUES (
-                                                'default',
-                                                10,
-                                                50,
-                                                8,
-                                                36500,
-                                                1,
-                                                '1,10',
-                                                '1,4',
-                                                250,
-                                                10,
-                                                130,
-                                                120,
-                                                200,
-                                                ?)""", (uid,)
-                            )
+                # adding basic config
+                cur.execute(default_config_insert, (uid,))
+                # adding basic template
+                addbasictemplate(uid, cur)
                 con.commit()
 
                 self.user = User(uid, username)
@@ -650,9 +687,11 @@ class DecksMain(QMainWindow):
         con = sqlite3.connect(database)
         cur = con.cursor()
         cur.execute(f"""INSERT INTO decks (name, desc, created, modified, created_uid, isPublic, isDeleted)
-                    VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id""", (deckname, desc, time(), config.id, self.user.id, 0, 0))
+                    VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id""",
+                    (deckname, desc, time(), config.id, self.user.id, 0, 0))
         deckid = cur.fetchone()[0]
-        cur.execute(f"""INSERT INTO user_decks (uid, deck_id, config_id) VALUES (?, ?, ?)""", (self.user.id, deckid, config.id))
+        cur.execute(f"""INSERT INTO user_decks (uid, deck_id, config_id) VALUES (?, ?, ?)""",
+                    (self.user.id, deckid, config.id))
         con.commit()
         cur.close()
         con.close()
@@ -674,14 +713,12 @@ class DecksMain(QMainWindow):
         # print(table_height)
         # self.decktree.setMinimumHeight(table_height)
 
-
     def opendeck(self, val):
         deck = self.decktree.model().item(val.row())
         deckselect = DeckSelected(self.user, deck)
         stack.addWidget(deckselect)
         self.adddeckwindow = None
         stack.setCurrentIndex(8)
-
 
     def fetch_decks(self):
         # todo add id restrictions and decide on access method (id or name)
@@ -807,8 +844,18 @@ class Study:
         self.user = user
         self.deck = deck
         self.card = None
+        self.template = None
         self.starttime = None
         self.endtime = None
+
+        #########################
+
+        self.queues = [Queue()] * 4
+        self.collapsetime = 1200
+        # todo add configuration for this in user preferences, hard code rn
+        self.reps = 0 # not used rn
+
+        ##################
 
         self.studyfront = StudyFront()
         self.studyfront.flipbutton.clicked.connect(self.flip)
@@ -821,38 +868,496 @@ class Study:
         self.studyback.easybutton.clicked.connect(lambda: self.review(3))
         stack.addWidget(self.studyback)
 
+        self.startreview()
+        """ 
+        todo:
+        Study sequence/loop:
+        initialise queues once? Do i need to use a queue data structure here or would an artificial queue using the sql 
+        database work? - using queue data strucutures is probably feasible sticking to what is outlined below, storing 
+        all potential cards for review would prevent lots of repeated database connections <---- potential justification
+        
+        loop:
+        - fetch next card
+        - filter through queues in fixed preferential order for now, can add configuration later
+        - show the front
+        - flip input
+        - show back
+        - user inputs ease
+        - calculate interval
+        - log review
+        - if using dynamic queue data strucutures, will need to check due, then add card back to appropriate queue if 
+        necessary
+        - check for more cards in queue
+        - if yes loop
+        """
+
+    def startreview(self):
+        self.loadcard()
+        self.template = Template(self.card.template_id)
+        self.starttime = time()
         self.showfront()
 
     def showfront(self):
-        self.loadcard()
-        self.starttime = time()
+        front = self.fillfront()
+        self.studyfront.htmlview.setHtml(f"""<head><style>{self.template.styling}</style></head> <body class='card'>{front}</body>""")
         stack.setCurrentIndex(9)
 
+    def fillfront(self):
+        front = re.sub(r"\n", "", self.template.front)
+        match = True
+        while match:
+            match = re.search(r"\{\{(.+?)}}", front)
+            if match:
+                match = match.group(0)
+                field = match[2:-2]
+                front = re.sub(match, f"{self.card.zip[field]}", front)
+        return front
+
+    def fillback(self):
+        back = re.sub(r"\n", "", self.template.back)
+        match = True
+        while match:
+            match = re.search(r"\{\{(.+?)}}", back)
+            if match:
+                match = match.group(0)
+                field = match[2:-2]
+                if field == "FrontSide":
+                    front = self.fillfront()
+                    back = re.sub(match, f"{front}", back)
+                else:
+                    back = re.sub(match, f"{self.card.zip[field]}", back)
+        return back
+
     def loadcard(self):
-        return
+        self.card = self.get_card()
+        if not self.card:
+            print("GO BACK TO DECK SELECTED PAGE")
+            for i in range(stack.count() - 9):
+                widget = stack.widget(9)
+                stack.removeWidget(widget)
+                widget.deleteLater()
+                stack.setCurrentIndex(9)
+            return
 
     def flip(self):
         stack.setCurrentIndex(10)
         self.showback()
+        self.showback()
 
     def showback(self):
-        return
+        back = self.fillback()
+        if self.card.status == 0 or 1:
+            self.new_ivls, self.due_times = self.calculateintervals1()
+        elif self.card.status == 2:
+            self.new_ivls, self.due_times = self.calculateintervals2()
+        elif self.card.status == 3:
+            self.new_ivls, self.due_times = self.calculateintervals3()
+
+        # todo when setting text convert these to more manageable units ie mins -> hours -> days -> months float -> float years
+        self.studyback.againivllabel.setText(self.converttime(self.new_ivls[0]))
+        self.studyback.hardivllabel.setText(self.converttime(self.new_ivls[1]))
+        self.studyback.goodivllabel.setText(self.converttime(self.new_ivls[2]))
+        self.studyback.easyivllabel.setText(self.converttime(self.new_ivls[3]))
+
+        self.studyback.htmlview.setHtml(f"""<head><style>{self.template.styling}</style></head> <body class='card'>{back}</body>""")
+        stack.setCurrentIndex(10)
+
+    def converttime(self, seconds):
+        duration = datetime.timedelta(seconds=seconds)
+
+        years = duration.days // 365
+        months = duration.days // 30.44 % 12
+        days = duration.days % 30.44
+        hours = duration.seconds // 3600
+        minutes = (duration.seconds // 60) % 60
+
+        if years > 0:
+            return f"{years:.1f}y"
+        elif months > 0:
+            return f"{months:.1f}mo"
+        elif days > 0:
+            return f"{days:.0f}d"
+        elif hours > 0:
+            return f"{hours:.0f}h"
+        else:
+            return f"{minutes:.0f}m"
 
     def review(self, ease):
         self.endtime = time()
-        stack.setCurrentIndex(9)
+        self.update_interval(ease)
+        self.showfront()
+
+    def update_interval(self, ease):
+        # NOTE FOR WRITEUP, CAN FIND OLD VERSION OF THIS FUNCTION ON GOOGLE DRIVE TO DEMONSTRATE HOW IT HAS
+        # BEEN REFACTORED - WILL DEFINITELY ALLOW FOR EASIER EXPLANATION
+        # todo take card status and calculate a set of intervals for each button -> store and display these
+
+        new_ef = self.card.ease_factor # (for convenience if not changed)
+
+        # needs to be stored in user preferences
+        colConf = {
+            'newSpread': 0,
+            'collapseTime': 1200,
+        }
+
+        self.card.reps += 1
+        # todo - only handle new_ef calculations here
+        # need to add config record
+        status_log = self.card.status
+
+        if self.card.status == 0:
+            new_delays = [int(x) for x in self.deck.config.new_delays.split(',')]
+            self.card.left = len(new_delays)
+            self.card.status = 1
+
+        if self.card.status == 1:
+            new_delays = [int(x) * 60 for x in self.deck.config.new_delays.split(',')]
+            if ease == 0:
+                self.card.left = len(new_delays)
+            elif ease == 2:
+                self.card.left -= 1
+                if self.card.left == 0:
+                    self.card.status = 2
+            elif ease == 3:
+                self.card.status = 2
+                self.card.left = 0
+
+        elif self.card.status == 2:
+            # todo add in leech fails/flagging?
+            lapse_delays = [int(x) * 60 for x in self.deck.config.lapse_delays.split(',')]
+            if ease == 0:
+                self.card.lapses += 1
+                new_ef = self.card.ease_factor - 20
+                self.card.status = 3
+                self.card.left = len(lapse_delays)
+            elif ease == 1:
+                new_ef = self.card.ease_factor - 15
+            elif ease == 3:
+                new_ef = self.card.ease_factor + 20
+
+        elif self.card.status == 3:
+            print("status: relearning")
+            # todo add in min ivl checking
+            lapse_delays = [int(x) for x in self.deck.config.lapse_delays.split(',')]
+            min_ivl = self.deck.config.min_ivl * 86400
+
+            if ease == 0:
+                self.card.left = len(lapse_delays)
+
+            elif ease == 2:
+                self.card.left -= 1
+                if self.card.left == 0:
+                    self.card.status = 2
+
+            elif ease == 3:
+                self.card.status = 2
+                self.card.left = 0
+
+        else:
+            assert 0
+
+        new_due = self.due_times[ease]
+        new_ivl = self.new_ivls[ease]
+
+        self.log_review(ease, status_log, new_ivl, new_ef)
+        self.card.review_update(new_ivl, new_ef, new_due)
+        return ease, status_log, new_ivl, new_ef,
+
+    def calculateintervals1(self):
+        # calculations for status = 0 and 1
+
+        new_delays = [int(x) * 60 for x in self.deck.config.new_delays.split(',')]
+        new_grad_ivls = [int(x) for x in self.deck.config.new_grad_ivls.split(',')]
+        # might want to replace this with temp values then return and assign to self.cards,
+        # in order to be able to log old/new ivls etc. - done
+
+        due_times = [0] * 4
+        new_ivls = [0] * 4
+
+        # print(new_delays)
+
+        new_ivls[0] = new_delays[0]
+        due_times[0] = time() + new_ivls[0]
+
+        if self.card.status == 0:
+            left = len(new_delays)
+        else:
+            left = self.card.left
+
+        if left != 1:
+            new_ivls[1] = (new_delays[-left] + new_delays[-left + 1]) / 2
+            due_times[1] = time() + new_ivls[1]
+        elif left == 1:
+            new_ivls[1] = new_delays[-left]
+            due_times[1] = time() + new_ivls[1]
+
+        if left - 1 == 0:
+            new_ivls[2] = new_grad_ivls[0] * 86400
+            due_times[2] = time() + new_ivls[2]
+        else:
+            new_ivls[2] = new_delays[-(left-1)]
+            due_times[2] = time() + new_ivls[2]
+
+        new_ivls[3] = new_grad_ivls[1] * 86400
+        due_times[3] = time() + new_ivls[3]
+
+        return new_ivls, due_times
+
+    def calculateintervals2(self):
+        # for status = 2 (review)
+        due_times = [0] * 4
+        new_ivls = [0 ] * 4
+
+        lapse_delays = [int(x) * 60 for x in self.deck.config.lapse_delays.split(',')]
+        min_ivl = self.deck.config.min_ivl * 86400
+        max_ivl = self.deck.config.max_ivl * 86400
+
+        new_ivls[0] = self.card.interval * self.deck.config.lapse_percent / 100
+        if new_ivls[0] < min_ivl:
+            new_ivls[0] = min_ivl
+        due_times[0] = time() + lapse_delays[0]
+
+        new_ivls[1] = self.card.interval * self.deck.config.rev_hard_factor / 100
+        due_times[1] = time() + new_ivls[1]
+
+        if math.ceil(self.card.due / 86400) * 86400 < math.ceil(time() / 86400) * 86400:
+            bonus = (math.ceil(time() / 86400) * 86400 - math.ceil(self.card.due / 86400) * 86400) / 2
+        else:
+            bonus = 0
+        new_ivls[2] = (self.card.interval + bonus) * self.card.ease_factor / 100
+        due_times[2] = time() + new_ivls[2]
+
+        if math.ceil(self.card.due / 86400) * 86400 < math.ceil(time() / 86400) * 86400:
+            bonus = (math.ceil(time() / 86400) * 86400 - math.ceil(self.card.due / 86400) * 86400)
+        else:
+            bonus = 0
+        new_ivls[3] = (self.card.interval + bonus) * (self.card.ease_factor / 100) * (
+                    self.deck.config.rev_easy_factor / 100)
+        due_times[3] = time() + new_ivls[3]
+
+        return new_ivls, due_times
+
+    def calculateintervals3(self):
+        # for status 3 (relearning)
+        print("status: relearning")
+        lapse_delays = [int(x) for x in self.deck.config.lapse_delays.split(',')]
+        min_ivl = self.deck.config.min_ivl * 86400
+
+        due_times = [0] * 4
+        new_ivls = [0] * 4
+
+        new_ivls[0] = self.card.interval * self.deck.config.lapse_percent / 100
+        if new_ivls[0] < min_ivl:
+            new_ivls[0] = min_ivl
+        due_times[0] = time() + lapse_delays[0]
+
+        # DON'T CHANGE INTERVALS HERE
+        if self.card.left != 1:
+            due_times[1] = time() + (self.deck.config.lapse_percent[-self.card.left] + self.deckc.config.lapse_percent[
+                -self.card.left + 1]) / 2
+        if self.card.left == 1:
+            due_times[1] = time() + lapse_delays[-self.card.left]
+        new_ivls[1] = self.card.interval
+
+        if self.card.left - 1 == 0:
+            due_times[2] = time() + self.card.interval
+        else:
+            due_times[2] = time() + lapse_delays[-(self.card.left - 1)]
+        new_ivls[2] = self.card.interval
+
+        due_times[3] = time() + self.card.interval
+        new_ivls[3] = self.card.interval
+
+        return new_ivls, due_times
+
+    def log_review(self, ease, status_log, new_ivl, new_ef):
+        # something wrong here??
+        con = sqlite3.connect(database)
+        cur = con.cursor()
+        cur.execute("""SELECT time from revlog WHERE ucid = ? ORDER BY time DESC""", (self.card.id,))
+        try:
+            last_time = cur.fetchone()[0]
+        except:
+            last_time = None
+
+        cur.execute("""INSERT INTO revlog (
+                    ucid,
+                    ease,
+                    ivl,
+                    lastivl,
+                    ef,
+                    lastef,
+                    status,
+                    reps,
+                    lapses,
+                    time,
+                    lasttime,
+                    start,
+                    end) VALUES
+                    (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", (
+            self.card.id, ease, new_ivl, self.card.interval, new_ef, self.card.ease_factor, status_log, self.card.reps,
+            self.card.lapses, time(), last_time, self.starttime, self.endtime))
+        con.commit()
+        cur.close()
+        con.close()
+
+    def fill_learn(self):
+        # need to store and track cards added to queue and last update time for resetting over new days filling with
+        # all cards at once might present issues for inserting cards with smaller intervals, so maybe will have to
+        # retrieve one at a time? And use another method for presenting total number of cards to be learnt that means
+        # it can be displayed to the user
+        if not self.queues[1].empty():
+            return True
+        con = sqlite3.connect(database)
+        cur = con.cursor()
+        cutoff = time() + self.collapsetime
+        cur.execute(
+            """SELECT uc.id FROM user_cards uc INNER JOIN cards c ON uc.cid = c.id INNER JOIN decks d ON
+             c.deck_id = d.id INNER JOIN user_decks ud ON ud.deck_id = d.id WHERE ud.id = ? AND
+              (uc.status = 1 OR uc.status = 3) AND uc.due <= ? ORDER BY due ASC LIMIT ?""",
+            (self.deck.udid, cutoff, self.deck.config.rev_per_day))
+        # need to change rework rev_per_day filter
+        # order by ASC here is arbitrary for deterministic ordering (old)
+        # order by due should get the earliest cards first but still suffers from the same issue as above
+        for ucid in cur.fetchall():
+            self.queues[1].put(Flashcard(ucid[0]))
+            self.queues[1] = self.queues[1]
+        cur.close()
+        con.close()
+        if not self.queues[1].empty():
+            return True
+
+    def fill_new(self):
+        if not self.queues[0].empty():
+            return True
+        con = sqlite3.connect(database)
+        cur = con.cursor()
+        # this assumes that card id is the same as order for cards to be learnt, might want to assign a deck_idx to
+        # user_cards with status 0 that can be changed and allows for custom learning orders
+        cur.execute(
+            """SELECT uc.id FROM user_cards uc INNER JOIN cards c ON uc.cid = c.id INNER JOIN decks d ON
+             c.deck_id = d.id INNER JOIN user_decks ud ON ud.deck_id = d.id WHERE ud.id = ? AND 
+            uc.status = 0 ORDER BY uc.id ASC LIMIT ?""",
+            (self.deck.udid, self.deck.config.new_per_day))
+        for ucid in cur.fetchall():
+            self.queues[0].put(Flashcard(ucid[0]))
+        # need to store and track cards added to queue and last update time for resetting over new days. IMPORTANT HERE
+        # so that more and more new cards don't keep getting added
+        cur.close()
+        con.close()
+        if not self.queues[0].empty():
+            return True
+
+    def fill_review(self):
+        if not self.queues[2].empty():
+            return True
+        con = sqlite3.connect(database)
+        cur = con.cursor()
+        cur.execute(
+            """SELECT uc.id FROM user_cards uc INNER JOIN cards c ON uc.cid = c.id INNER JOIN decks d ON
+             c.deck_id = d.id INNER JOIN user_decks ud ON ud.deck_id = d.id WHERE ud.id = ? AND
+             uc.status = 2 AND uc.due <= ?ORDER BY uc.due ASC LIMIT ?""",
+            (self.deck.udid, math.ceil(time() / 86400) * 86400, self.deck.config.rev_per_day))
+        for ucid in cur.fetchall():
+            self.queues[2].put(Flashcard(ucid[0]))
+        cur.close()
+        con.close()
+        # again need to ensure limit is tracked and updated in database
+        # should retrieve all due cards then shuffle and limit number based on settings
+        if not self.queues[2].empty():
+            return True
+
+    def get_card(self):
+        card = self._get_card()
+        if card:
+            self.reps += 1
+        return card
+
+    def _get_card(self):
+        "Return the next due card or None."
+
+        # learning card due?
+        c = self.get_learn_card()
+        if c:
+            return c
+
+        # new first, or time for one?
+        if self.time_for_new_card():
+            c = self.get_new_card()
+            if c:
+                return c
+
+        # card due for review?
+        c = self.get_review_card()
+        if c:
+            return c
+
+        # new cards left?
+        c = self.get_new_card()
+        if c:
+            return c
+
+        # collapse or finish
+        return self.get_learn_card(collapse=True)
+
+    def get_learn_card(self, collapse=False):
+        if self.fill_learn():
+            return self.queues[1].get()
+        else:
+            return None
+
+    def get_new_card(self):
+        if self.fill_new():
+            return self.queues[0].get()
+
+    def get_review_card(self):
+        if self.fill_review():
+            return self.queues[2].get()
+
+    def time_for_new_card(self):
+        # determines if a new card should be shown (in relation to the review cards)
+        # placeholder right now
+        return False
+
+    def review_card(self):
+        card = self.get_card()
+        if not card:
+            # call back to deck page and set text to show all cards are reviewed
+            return True
+        self.show_card(card)
+        start = time()
+        temp = input("Press the Enter key to flip...")
+        self.flip_card(card)
+        graded = False
+        # need to change for more advanced algorithm
+        # on ease button clicked
+        # self.calculate_interval_new(card, ease, start, end)
 
 
 class StudyFront(QMainWindow):
     def __init__(self):
         super().__init__()
         loadUi("studyfront.ui", self)
+        connectmainbuttons(self)
+
+        self.htmlview = QWebEngineView()
+
+        self.mainvlayout.insertWidget(2, self.htmlview, 1)
 
 
 class StudyBack(QMainWindow):
     def __init__(self):
         super().__init__()
         loadUi("studyback.ui", self)
+        connectmainbuttons(self)
+
+        self.htmlview = QWebEngineView()
+
+        self.mainvlayout.insertWidget(2, self.htmlview, 0)
+        self.mainvlayout.setStretch(0, 0)
+        self.mainvlayout.setStretch(1, 0)
+        self.mainvlayout.setStretch(2, 1)
+        self.mainvlayout.setStretch(3, 0)
 
 
 class DeckOptions(QWidget):
@@ -914,7 +1419,6 @@ class DeckOptions(QWidget):
             config.save()
 
         self.hide()
-
 
     def __fillnewcardstab(self):
         new_delays = re.sub(",", " ", self.current_config.new_delays)
@@ -1452,7 +1956,6 @@ class AddCard(QMainWindow):
 
         self.addcard.clicked.connect(self.add_card)
 
-
     def applytemplate(self):
         self.templatesbutton.setText(self.template.name)
 
@@ -1483,7 +1986,8 @@ class AddCard(QMainWindow):
         self.templateswindow.selectbutton.clicked.connect(self.settemplate)
 
     def settemplate(self):
-        self.template = self.templateswindow.templatesmodel.item(self.templateswindow.templateslist.currentIndex().row(), 0)
+        self.template = self.templateswindow.templatesmodel.item(
+            self.templateswindow.templateslist.currentIndex().row(), 0)
         if self.template:
             self.applytemplate()
             self.templateswindow.hide()
@@ -1510,6 +2014,7 @@ class AddCard(QMainWindow):
         # self.fill_templates_box()
 
     def add_card(self):
+        # bad code?
         card_data = []
         empty = True
         for line in self.line_edits:
@@ -1523,15 +2028,18 @@ class AddCard(QMainWindow):
             cur = con.cursor()
 
             card_data = ','.join(card_data)
-
+            if not self.decksbox.currentText():
+                self.error.setText("No deck selected")
+                return
             d_idx = self.d_names.index(self.decksbox.currentText())
             deck_id = self.d_ids[d_idx]
+            deck = Deck(deck_id)
             cur.execute("""INSERT INTO cards (data, deck_id, template_id, modified, created_uid)
                             VALUES (?, ?, ?, ?, ?) RETURNING id""",
                         (card_data, deck_id, self.template.id, time(), self.user.id))
             cid = cur.fetchone()[0]
-            cur.execute("""INSERT INTO user_cards (uid, cid, ivl, type, status, reps, lapses, odue)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)""", (self.user.id, cid, None, 0, 0, 0, 0, time()))
+            cur.execute("""INSERT INTO user_cards (uid, cid, ivl, ef, type, status, reps, lapses, odue, left)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", (self.user.id, cid, None, deck.config.new_init_ef, 0, 0, 0, 0, time(), 0))
 
             try:
                 con.commit()
@@ -1552,6 +2060,7 @@ class AddCard(QMainWindow):
 
 class TemplatesWindow(QWidget):
     # todo add counts to each template text showing how many cards use the template
+    # also todo connect delete, when deleting dont allow basic to be deleted using min id fetch for the user!!
     def __init__(self, user, template):
         super().__init__()
         loadUi("templates.ui", self)
@@ -1610,17 +2119,18 @@ class TemplatesWindow(QWidget):
     def completeadd(self):
         template = self.addtemplatewindow.optionsmodel.item(self.addtemplatewindow.optionslist.currentIndex().row(), 0)
         name = self.templatenamewindow.namelineedit.text()
+        con = sqlite3.connect(database)
+        cur = con.cursor()
         if template.text() == "Add: Basic":
-            addbasictemplate(self.user, name=name)
+            addbasictemplate(self.user.id, cur)
         else:
-            con = sqlite3.connect(database)
-            cur = con.cursor()
-            cur.execute("""INSERT INTO templates (name, fields, sortfield, modified, created_uid) VALUES
-               (?, ?, ?, ?, ?)""", (name, template.fields, template.sortfield, time(), self.user.id))
+            cur.execute("""INSERT INTO templates (fields, sortfield, modified, created_uid, front_format, back_format,
+             styling, name) VALUES (?, ?, ?, ?, ?, ?, ?)""", (template.fields, template.sortfield, time(), self.user.id,
+                                                              template.front, template.back, template.styling, name))
             # self.setWindowState(Qt.WindowActive)
-            con.commit()
-            cur.close()
-            con.close()
+        con.commit()
+        cur.close()
+        con.close()
         self.templatenamewindow.deleteLater()
         self.loadtemplates()
 
@@ -1658,7 +2168,7 @@ class TemplatesWindow(QWidget):
             return
         self.templatefieldswindow = TemplateFieldsWindow(template)
         self.templatefieldswindow.savebutton.clicked.connect(self.savetemplatefields)
-        self.templatefieldswindow.cancelbutton.clicked.connect(lambda: self.cancel (self.templatefieldswindow))
+        self.templatefieldswindow.cancelbutton.clicked.connect(lambda: self.cancel(self.templatefieldswindow))
         self.templatefieldswindow.show()
         pass
 
@@ -1731,10 +2241,18 @@ class TemplatesWindow(QWidget):
         self.layoutwindow.show()
 
     def savetemplatelayout(self):
-        # updates into sql table...
-
+        # todo need to check if the layouts are valid, if not have to create dialog prompt alerting them and preventing
+        #  saving - return from this function, parent should be self.layoutwindow in init
+        con = sqlite3.connect(database)
+        cur = con.cursor()
+        cur.execute("""UPDATE templates SET front_format = ?, back_format = ?, styling = ? WHERE id = ?""",
+                    (self.layoutwindow.template.front, self.layoutwindow.template.back,
+                     self.layoutwindow.template.styling, self.layoutwindow.template.id))
+        con.commit()
+        cur.close()
+        con.close()
         self.layoutwindow.deleteLater()
-        pass
+        self.loadtemplates()
 
 
 class LayoutWindow(QWidget):
@@ -1747,9 +2265,6 @@ class LayoutWindow(QWidget):
         loadUi("templatelayout.ui", self)
         self.preview = QWebEngineView()
         self.previewwidget.layout().addWidget(self.preview, 2)
-        self.previewwidget.layout().setStretch(0, 0)
-        self.previewwidget.layout().setStretch(1, 0)
-        self.previewwidget.layout().setStretch(2, 1)
         self.template = template
 
         self.formatfrontbutton.toggle()
@@ -1814,7 +2329,8 @@ class LayoutWindow(QWidget):
             elif missing_brackets_error:
                 preview = "'{{' is missing closing '}}'"
             else:
-                preview = f"<head><style>{self.template.styling}</style></head> <body id=card>{front}</body>"
+                preview = f"<head><style>{self.template.styling}</style></head> <body class='card'>{front}</body>"
+                print(preview)
             return preview
         else:
             field_error, missing_brackets_error, back = self.extractfields(0)
@@ -1825,7 +2341,9 @@ class LayoutWindow(QWidget):
                 preview = "'{{' is missing closing '}}'"
 
             else:
-                preview = preview = f"<head><style>{self.template.styling}</style></head> <body id=card>{back}</body>"
+                preview = preview = f"<head><style>{self.template.styling}</style></head> <body class='card'>{back}</body>"
+                print(preview)
+
             return preview
         pass
 
@@ -1908,7 +2426,6 @@ class TemplateFieldsWindow(QWidget):
         self.fieldslist.setModel(self.fieldsmodel)
         self.fieldslist.selectionModel().selectionChanged.connect(self.fieldselected)
 
-
         self.sortfieldradio.clicked.connect(self.changesortfield)
         self.addbutton.clicked.connect(self.addwindow)
         self.renamebutton.clicked.connect(self.renamewindow)
@@ -1933,7 +2450,8 @@ class TemplateFieldsWindow(QWidget):
             i += 1
 
     def fieldselected(self):
-        self.selectedfield = new_string = re.sub(r"^\d+: ", "", self.fieldsmodel.item(self.fieldslist.currentIndex().row(), 0).text())
+        self.selectedfield = new_string = re.sub(r"^\d+: ", "",
+                                                 self.fieldsmodel.item(self.fieldslist.currentIndex().row(), 0).text())
         if self.selectedfield == self.template.sortfield:
             self.sortfieldradio.setChecked(True)
         else:
@@ -2120,18 +2638,6 @@ class DeleteFieldWindow(QDialog):
         self.buttonBox.rejected.connect(self.deleteLater)
 
 
-def addbasictemplate(user, name="Basic"):
-    # todo - come back and include formatting when done
-    print("adding basic")
-    con = sqlite3.connect(database)
-    cur = con.cursor()
-    cur.execute("""INSERT INTO templates (name, fields, sortfield, modified, created_uid) VALUES
-    (?, ?, ?, ?, ?)""", (name, "Front,Back", "Front", time(), user.id))
-    cur.close()
-    con.commit()
-    con.close()
-
-
 class AddTemplate(QWidget):
     def __init__(self, user):
         super().__init__()
@@ -2221,9 +2727,10 @@ class Browse(QMainWindow):
             try:
                 cur.execute("""SELECT ud.id, d.name, d.desc, u.username FROM decks d INNER JOIN user_decks ud ON d.id 
                 = ud.deck_id INNER JOIN users u ON d.created_uid = u.id WHERE d.isPublic = 1 AND isDeleted = 0 AND 
-                ud.uid = d.created_uid AND (d.name REGEXP ? OR d.desc REGEXP ? OR u.username REGEXP ?)""", (searchfilter,
-                                                                                                            searchfilter,
-                                                                                                            searchfilter))
+                ud.uid = d.created_uid AND (d.name REGEXP ? OR d.desc REGEXP ? OR u.username REGEXP ?)""",
+                            (searchfilter,
+                             searchfilter,
+                             searchfilter))
             except Exception as e:
                 # todo - add error text at the bottom to show message
                 print("No public decks match your search")
@@ -2329,7 +2836,9 @@ class PublicDeckView(QWidget):
     def loadsamples(self):
         con = sqlite3.connect(database)
         cur = con.cursor()
-        cur.execute("""SELECT t.fields, c.data FROM cards c INNER JOIN templates t ON c.template_id = t.id WHERE deck_id = ? ORDER BY RANDOM () LIMIT 3""", (self.deck.did,))
+        cur.execute(
+            """SELECT t.fields, c.data FROM cards c INNER JOIN templates t ON c.template_id = t.id WHERE deck_id = ? ORDER BY RANDOM () LIMIT 3""",
+            (self.deck.did,))
         samples = cur.fetchall()
         self.vlayout = QVBoxLayout(self.samplescrollareacontents)
 
@@ -2371,16 +2880,17 @@ class PublicDeckView(QWidget):
             cur.execute("""SELECT MIN(id) FROM configs
                     WHERE uid = ?""", (self.user.id,))
             cfgid = cur.fetchone()[0]
-            cur.execute("""INSERT INTO user_decks (deck_id, uid, config_id) VALUES (?, ?, ?)""", (self.deck.did, self.user.id, cfgid))
+            cur.execute("""INSERT INTO user_decks (deck_id, uid, config_id) VALUES (?, ?, ?)""",
+                        (self.deck.did, self.user.id, cfgid))
             cur.execute("""SELECT c.id FROM cards c WHERE c.deck_id = ?""", (self.deck.did,))
             cids = cur.fetchall()
             for cid in cids:
                 cid = cid[0]
                 cur.execute("""SELECT id FROM user_cards WHERE cid = ? AND uid = ?""", (cid, self.user.id))
                 if not cur.fetchone():
-                    cur.execute("""INSERT INTO user_cards (uid, cid, ef, ivl, type, status, reps, lapses, odue)
-                                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                                (self.user.id, cid, self.deck.config.new_init_ef, None, 0, 0, 0, 0, time()))
+                    cur.execute("""INSERT INTO user_cards (uid, cid, ef, ivl, type, status, reps, lapses, odue, left)
+                                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                                (self.user.id, cid, self.deck.config.new_init_ef, None, 0, 0, 0, 0, time(), 0))
             self.addbutton.setText("Remove")
 
         else:
@@ -2392,11 +2902,11 @@ class PublicDeckView(QWidget):
         con.close()
         # todo call refresh function here, or other system
 
-
     def checkifinlibrary(self):
         con = sqlite3.connect(database)
         cur = con.cursor()
-        cur.execute("""SELECT id FROM user_decks ud WHERE ud.uid = ? AND ud.deck_id = ?""", (self.user.id, self.deck.did))
+        cur.execute("""SELECT id FROM user_decks ud WHERE ud.uid = ? AND ud.deck_id = ?""",
+                    (self.user.id, self.deck.did))
         exists = cur.fetchone() is not None
         return exists
 
@@ -2579,396 +3089,7 @@ REDUNDANT CODE BELOW!!!! NEEDS TO BE MIGRATED TO GUI.
 """
 
 
-# todo - migrate card review and spaced repetition algorithm/handling
-
-
-class SpacedRepetition:
-    def __init__(self, user, deck):
-        self.user = user
-        self.deck = deck
-
-        # self.load_deck_parameters()
-
-    def load_deck_parameters(self):
-        # could be handled here or in deck class (loading config for a deck)
-        pass
-
-    def save_deck_parameters(self):
-        pass
-        # todo
-
-    def calculate_interval_new(self, card, ease, start, end):
-        start = start
-        end = end
-        # default values in case they aren't changed:
-        new_ivl = card.interval
-        new_ef = card.ease_factor
-        new_due = card.due
-
-        con = sqlite3.connect(database)
-        cur = con.cursor()
-
-        colConf = {
-            'newSpread': 0,
-            'collapseTime': 1200,
-        }
-
-        card.reps += 1
-
-        # learning_steps = [60, 600]
-        # relearning_steps = 60
-        # collapse_time = 1200
-
-        # need to add config record
-        status_log = card.status
-
-        if card.status == 0:
-            cur.execute(
-                """SELECT configs.new_delays FROM configs INNER JOIN user_decks ON user_decks.config_id = config_id""")
-            new_delays = cur.fetchone()[0]
-            new_delays = [int(x) for x in new_delays.split(',')]
-            card.left = len(new_delays)
-            print("status: new")
-            card.status = 1
-
-        if card.status == 1:
-            print("status: learning")
-            cur.execute(
-                """SELECT configs.new_delays, configs.new_grad_ivls FROM configs INNER JOIN user_decks ON user_decks.config_id = config_id""")
-            new_delays, new_grad_ivls = cur.fetchone()
-            new_delays = [int(x) * 60 for x in new_delays.split(',')]
-            new_grad_ivls = [int(x) for x in new_grad_ivls.split(',')]
-            # might want to replace this with temp values then return and assign to cards, in order to be able to log old/new ivls etc
-            if ease == 0:
-                card.left = len(new_delays)
-                new_ivl = new_delays[0]
-                new_due = time() + new_ivl
-
-            elif ease == 1:
-                if card.left != 1:
-                    new_ivl = (new_delays[-card.left] + new_delays[-card.left + 1]) / 2
-                    new_due = time() + new_ivl
-                    # return stuff and log
-                if card.left == 1:
-                    new_ivl = new_delays[-card.left]
-                    new_due = time() + new_ivl
-                    # return stuff and log
-
-            elif ease == 2:
-                card.left -= 1
-                if card.left == 0:
-                    card.status = 2
-                    new_ivl = new_grad_ivls[0] * 86400
-                    new_due = time() + new_ivl
-                    # return stuff and log
-                else:
-                    new_ivl = new_delays[-card.left]
-                    new_due = time() + new_ivl
-                    # return stuff and log
-
-            elif ease == 3:
-                card.status = 2
-                card.left = 0
-                new_ivl = new_grad_ivls[1] * 86400
-                new_due = time() + new_ivl
-                # return stuff and log
-
-        elif card.status == 2:
-            print("status: review")
-            cur.execute(
-                """SELECT configs.rev_easy_factor, configs.rev_hard_factor, configs.max_ivl, configs.min_ivl, leech_fails, lapse_delays,
-        lapse_percent FROM configs INNER JOIN user_decks ON user_decks.config_id = config_id""")
-            easy_factor, hard_factor, max_ivl, min_ivl, leech_fails, lapse_delays, lapse_percent = cur.fetchone()
-            lapse_delays = [int(x) * 60 for x in lapse_delays.split(',')]
-            min_ivl *= 86400
-            max_ivl *= 86400
-            if ease == 0:
-                card.lapses += 1
-                new_ef = card.ease_factor - 20
-                card.status = 3
-                card.left = len(lapse_delays)
-                new_ivl = card.interval * lapse_percent / 100
-                if new_ivl < min_ivl:
-                    new_ivl = min_ivl
-                new_due = time() + lapse_delays[0]
-                # return stuff and log
-
-            elif ease == 1:
-                new_ivl = card.interval * hard_factor / 100
-                new_ef = card.ease_factor - 15
-                new_due = time() + new_ivl
-                # return stuff and log
-
-            elif ease == 2:
-                if math.ceil(card.due / 86400) * 86400 < math.ceil(time() / 86400) * 86400:
-                    bonus = (math.ceil(time() / 86400) * 86400 - math.ceil(card.due / 86400) * 86400) / 2
-                else:
-                    bonus = 0
-                new_ivl = (card.interval + bonus) * card.ease_factor / 100
-                new_due = time() + new_ivl
-                # return stuff and log
-
-            elif ease == 3:
-                if math.ceil(card.due / 86400) * 86400 < math.ceil(time() / 86400) * 86400:
-                    bonus = (math.ceil(time() / 86400) * 86400 - math.ceil(card.due / 86400) * 86400)
-                else:
-                    bonus = 0
-                new_ivl = (card.interval + bonus) * (card.ease_factor / 100) * (easy_factor / 100)
-                new_due = time() + new_ivl
-                new_ef = card.ease_factor + 20
-                # return stuff and log
-
-        elif card.status == 3:
-            print("status: relearning")
-            cur.execute(
-                """SELECT configs.min_ivl, lapse_delays, lapse_percent FROM configs INNER JOIN user_decks ON user_decks.config_id = config_id""")
-            min_ivl, lapse_delays, lapse_percent = cur.fetchone()
-            lapse_delays = [int(x) for x in lapse_delays.split(',')]
-
-            if ease == 0:
-                card.left = len(lapse_delays)
-                new_ivl = card.interval * lapse_percent / 100
-                new_due = time() + lapse_delays[0]
-
-            # DON'T CHANGE INTERVALS HERE
-            elif ease == 1:
-                if card.left != 1:
-                    new_due = time() + (lapse_percent[-card.left] + lapse_percent[-card.left + 1]) / 2
-                    # return stuff and log
-                if card.left == 1:
-                    new_due = time() + lapse_delays[-card.left]
-                    # return stuff and log
-
-            elif ease == 2:
-                card.left -= 1
-                if card.left == 0:
-                    card.status = 2
-                    new_due = time() + card.interval
-                    # return stuff and log
-                else:
-                    new_due = time() + lapse_delays[-card.left]
-                    # return stuff and log
-
-            elif ease == 3:
-                card.status = 2
-                card.left = 0
-                new_due = time() + card.interval
-                # return stuff and log
-        else:
-            assert 0
-
-        # todo fix this
-        cur.close()
-        con.close()
-        self.log_review(card, ease, status_log, start, end, new_ivl, new_ef)
-        card.review_update(new_ivl, new_ef, new_due)
-
-    def log_review(self, card, ease, status_log, start, end, new_ivl, new_ef):
-        # something wrong here
-        con = sqlite3.connect(database)
-        cur = con.cursor()
-        cur.execute("""SELECT time from revlog WHERE ucid = ? ORDER BY time DESC""", (card.id,))
-        try:
-            last_time = cur.fetchone()[0]
-        except:
-            last_time = None
-        # need to have else = None?
-        cur.execute("""INSERT INTO revlog (
-                    ucid,
-                    ease,
-                    ivl,
-                    lastivl,
-                    ef,
-                    lastef,
-                    status,
-                    reps,
-                    lapses,
-                    time,
-                    lasttime,
-                    start,
-                    end) VALUES
-                    (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", (
-            card.id, ease, new_ivl, card.interval, new_ef, card.ease_factor, status_log, card.reps,
-            card.lapses, time(), last_time, start, end))
-        con.commit()
-        cur.close()
-        con.close()
-
-
-class Review:
-    def __init__(self, spaced_repetition, deck):
-        self.sr = spaced_repetition
-        self.deck = deck
-        self.queues = [Queue()] * 4
-        self.learnlimit = 1000
-        self.newlimit = 10
-        self.reviewlimit = 200
-        self.collapsetime = 1200
-        self.reps = 0
-
-    def reset_queue(self, no):
-        self.queues[no] = Queue()
-
-    def fill_learn(self):
-        # need to store and track cards added to queue and last update time for resetting over new days filling with
-        # all cards at once might present issues for inserting cards with smaller intervals, so maybe will have to
-        # retrieve one at a time? And use another method for presenting total number of cards to be learnt that means
-        # it can be displayed to the user
-        if not self.queues[1].empty():
-            return True
-        con = sqlite3.connect(database)
-        cur = con.cursor()
-        cutoff = time() + self.collapsetime
-        cur.execute(
-            "SELECT u.id FROM user_cards u INNER JOIN cards ON u.cid = cards.id WHERE cards.deck_id = ? AND (u.status = 1 OR u.status = 3) AND u.due <= ? AND u.uid = ? ORDER BY due ASC LIMIT ?",
-            (self.deck.id, cutoff, self.deck.user.id, self.learnlimit,))
-        # order by ASC here is arbitrary for deterministic ordering (old)
-        # order by due should get the earliest cards first but still suffers from the same issue as above
-        for ucid in cur.fetchall():
-            self.queues[1].put(Flashcard(ucid[0]))
-            self.queues[1] = self.queues[1]
-        cur.close()
-        con.close()
-        if not self.queues[1].empty():
-            return True
-
-    def fill_new(self):
-        if not self.queues[0].empty():
-            return True
-        con = sqlite3.connect(database)
-        cur = con.cursor()
-        # this assumes that card id is the same as order for cards to be learnt, might want to assign a deck_idx to
-        # user_cards with status 0 that can be changed and allows for custom learning orders
-        cur.execute(
-            "SELECT u.id FROM user_cards u INNER JOIN cards ON u.cid = cards.id WHERE cards.deck_id = ? AND u.status = 0 AND u.uid = ? ORDER BY cards.id ASC LIMIT ?",
-            (self.deck.id, self.deck.user.id, self.newlimit))
-        for ucid in cur.fetchall():
-            self.queues[0].put(Flashcard(ucid[0]))
-        # need to store and track cards added to queue and last update time for resetting over new days. IMPORTANT HERE
-        # so that more and more new cards don't keep getting added
-        cur.close()
-        con.close()
-        if not self.queues[0].empty():
-            return True
-
-    def fill_review(self):
-        if not self.queues[2].empty():
-            return True
-        con = sqlite3.connect(database)
-        cur = con.cursor()
-        cur.execute(
-            "SELECT u.id FROM user_cards u INNER JOIN cards ON u.cid = cards.id WHERE cards.deck_id = ? AND u.status = 2 AND u.due <= ? AND u.uid = ? ORDER BY u.due ASC LIMIT ?",
-            (self.deck.id, math.ceil(time() / 86400) * 86400, self.deck.user.id, self.reviewlimit))
-        for ucid in cur.fetchall():
-            self.queues[2].put(Flashcard(ucid[0]))
-        cur.close()
-        con.close()
-        # again need to ensure limit is tracked and updated in database
-        # should retrieve all due cards then shuffle and limit number based on settings
-        if not self.queues[2].empty():
-            return True
-
-    def review(self):
-        print("Type 'exit' at any point to exit review mode")
-        empty = False
-        while not empty:
-            exit = self.review_card()
-            if exit == 'exit':
-                break
-            elif exit:
-                print("No more cards to review")
-                empty = True
-
-    # done - allow review of as many cards as desired and exit at any time
-    # todo - allow for custom review
-
-    def get_card(self):
-        card = self._get_card()
-        if card:
-            self.reps += 1
-            return card
-
-    def _get_card(self):
-        "Return the next due card or None."
-
-        # learning card due?
-        c = self.get_learn_card()
-        if c:
-            return c
-
-        # new first, or time for one?
-        if self.time_for_new_card():
-            c = self.get_new_card()
-            if c:
-                return c
-
-        # card due for review?
-        c = self.get_review_card()
-        if c:
-            return c
-
-        # new cards left?
-        c = self.get_new_card()
-        if c:
-            return c
-
-        # collapse or finish
-        return self.get_learn_card(collapse=True)
-
-    def get_learn_card(self, collapse=False):
-        if self.fill_learn():
-            return self.queues[1].get()
-        else:
-            return None
-
-    def get_new_card(self):
-        if self.fill_new():
-            return self.queues[0].get()
-
-    def get_review_card(self):
-        if self.fill_review():
-            return self.queues[2].get()
-
-    def time_for_new_card(self):
-        # determines if a new card should be shown (in relation to the review cards)
-        return True
-
-    def review_card(self):
-        # messy way for early exit but should work for now
-        card = self.get_card()
-        if not card:
-            return True
-        self.show_card(card)
-        start = time()
-        temp = input("Press the Enter key to flip...")
-        if temp == 'exit':
-            return 'exit'
-        self.flip_card(card)
-        graded = False
-        # need to change for more advanced algorithm
-        while not graded:
-            try:
-                ease = input("How easy (0-3) was the card to recall...")
-                ease = int(ease)
-                graded = True
-                end = time()
-                self.sr.calculate_interval_new(card, ease, start, end)
-                return False
-            except Exception as e:
-                if ease == 'exit':
-                    return 'exit'
-                else:
-                    print(f'Error Occurred: {e}')
-
-    def show_card(self, card):
-        # need to add some functionality to cards to filter front and back sides
-        # for now will just define front/back and print cards
-        print(card.zip["front"])
-        # todo - fetch front fields and display once gui incorporated
-
-    def flip_card(self, card):
-        print(card.zip["back"])
-        # todo - as above
+# todo - migrate card review and spaced repetition algorithm/handling - need to revies queues
 
 
 class Main:
@@ -2980,81 +3101,8 @@ class Main:
 
     # login done
     # deck selection done
-    # todo - migrate deck and template creation
     # todo - migrate flashcard moving
-    # todo - migrate public deck adding to library + add checking for duplication
-
-    def create_deck(self):
-        con = sqlite3.connect(database)
-        cur = con.cursor()
-        name = input("Deck name...")
-        existing = cur.fetchall()
-        while name in existing:
-            name = input("Name already exists, please enter a new name...")
-        description = input("Description...")
-        cur.execute("""INSERT INTO decks (name, desc, created, modified, created_uid, total_cards, isPublic, isDeleted)
-                           VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id""",
-                    (name, description, time(), time(), self.user.id, 0, 0, 0))
-        deck_id = cur.fetchone()[0]
-        cur.execute("SELECT id, name, new_init_ef FROM configs where uid = ?", (self.user.id,))
-
-        cur.execute("SELECT id, name FROM configs where uid = ?", (self.user.id,))
-        ids, names = zip(*[(row[0], row[1]) for row in cur.fetchall()])
-
-        # should instead print 1-n and then retrieve id of that index.
-        for i in range(len(ids)):
-            print(f"{ids[i]} - {names[i]}")
-        if not ids:
-            print("you do not have any configs setup")
-        while True:
-            config = int(input("\nEnter a valid config id or 'exit' to return"))
-            if config == 'exit':
-                return
-            elif config in ids:
-                break
-            else:
-                print("invalid input")
-
-        while True:
-            try:
-
-                cur.execute("""INSERT INTO user_decks (uid, deck_id, config_id) VALUES (?, ?, ?)""",
-                            (self.user.id, deck_id, config))
-                break
-            except:
-                print("invalid id")
-        print(f"Deck {name} created")
-        con.commit()
-        cur.close()
-        con.close()
-        self.menu()
-
-    def create_template(self):
-        con = sqlite3.connect(database)
-        cur = con.cursor()
-        name = input("Template name...")
-        existing = cur.fetchall()
-        while name in existing:
-            name = input("Name already exists, please enter a new name...")
-        fields = []
-        print("Enter as many fields as desired, and hit return when finished")
-        while True:
-            field = input("Enter field...")
-            if field == "":
-                break
-            fields.append(field)
-        sortfield = fields[0]
-        cur.execute("""INSERT INTO templates (name, fields, sortfield, modified, created_uid)
-                            VALUES (?, ?, ?, ?, ?)""", (name, ",".join(fields), sortfield, time(), self.user.id))
-        print(f"Template {name} created")
-        con.commit()
-        cur.close()
-        con.close()
-        self.menu()
-
-    def edit_template(self):
-        print("Can't you read? I said todo")
-        self.menu()
+    # todo - migrate public deck adding to library + add checking for duplication - maybe done but left in rn
 
     def move_flashcards(self):
         # testing: invalid inputs for everything, selecting empty decks, same decks etc. (although not really necessary until finalised with GUI)
@@ -3140,33 +3188,6 @@ class Main:
         con.close()
         self.menu()
 
-    def browse_decks(self):
-        con = sqlite3.connect(database)
-        cur = con.cursor()
-        try:
-            cur.execute("""SELECT d.id, d.name, d.desc, u.username FROM decks d INNER JOIN users u on d.created_uid = 
-            u.id WHERE d.isPublic = 1 AND isDeleted = 0""")
-        except:
-            print("No public decks right now")
-            return
-        dids, names, descs, users = zip(*[(row[0], row[1], row[2], row[3]) for row in cur.fetchall()])
-        card_counts = []
-        for i in range(len(dids)):
-            cur.execute("""SELECT COUNT(*) FROM cards WHERE deck_id = ?""", (dids[i],))
-            card_counts.append(cur.fetchone()[0])
-            print(f"{names[i]}: {descs[i]} | Creator - {users[i]} | Cards - {card_counts[i]} | id - {dids[i]}")
-        while True:
-            o = int(input("\nEnter the id of deck you would like to add or type 'exit' to return"))
-            if o == 'exit':
-                return
-            elif o in dids:
-                self._copy_deck(o, cur, con, names[dids.index(o)])
-                cur.close()
-                con.close()
-                return
-            else:
-                print("invalid input")
-
     def _copy_deck(self, did, cur, con, deckname):
         cur.execute("SELECT id, name, new_init_ef FROM configs where uid = ?", (self.user.id,))
         ids, names, efs = zip(*[(row[0], row[1], row[2]) for row in cur.fetchall()])
@@ -3188,17 +3209,6 @@ class Main:
         ef = efs[ids.index(config)]
         self._copy_cards(did, cur, con, ef)
         print(f"Deck {deckname} successfully added to your library")
-
-    def _copy_cards(self, did, cur, con, ef):
-        cur.execute("SELECT * FROM configs")
-        cur.execute("""SELECT id FROM cards WHERE deck_id = ?""", (did,))
-        cids = [row[0] for row in cur.fetchall()]
-        for cid in cids:
-            cur.execute("""INSERT INTO user_cards (uid, cid, ef, ivl, type, status, reps, lapses, odue)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""", (self.user.id, cid, ef, None, 0, 0, 0, 0, time()))
-
-        con.commit()
-
 
 """
 PROGRAM EXECUTION:

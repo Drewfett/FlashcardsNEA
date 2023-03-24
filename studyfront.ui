@@ -44,7 +44,7 @@
      </spacer>
     </item>
     <item>
-     <layout class="QVBoxLayout" name="verticalLayout_2">
+     <layout class="QVBoxLayout" name="mainvlayout">
       <item>
        <spacer name="verticalSpacer_4">
         <property name="orientation">
@@ -241,16 +241,6 @@ font: 16pt;color:rgb(47, 50, 58)</string>
          </spacer>
         </item>
        </layout>
-      </item>
-      <item>
-       <widget class="QWidget" name="frontwidget" native="true">
-        <property name="sizePolicy">
-         <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
-          <horstretch>0</horstretch>
-          <verstretch>0</verstretch>
-         </sizepolicy>
-        </property>
-       </widget>
       </item>
       <item>
        <layout class="QHBoxLayout" name="horizontalLayout_3">
