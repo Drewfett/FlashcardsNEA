@@ -24,7 +24,6 @@
   <component name="DBNavigator.Project.DatabaseFileManager">
     <open-files>
       <object connection-id="6585c18a-1f41-42f8-a6e7-bd51ea421e6a" object-ref="schemas/main/tables/configs" />
-      <object connection-id="6585c18a-1f41-42f8-a6e7-bd51ea421e6a" object-ref="schemas/main/tables/cards" />
       <object connection-id="6585c18a-1f41-42f8-a6e7-bd51ea421e6a" object-ref="schemas/main/tables/user_cards" />
       <object connection-id="6585c18a-1f41-42f8-a6e7-bd51ea421e6a" object-ref="schemas/main/tables/user_decks" />
       <object connection-id="6585c18a-1f41-42f8-a6e7-bd51ea421e6a" object-ref="schemas/main/tables/revlog" />

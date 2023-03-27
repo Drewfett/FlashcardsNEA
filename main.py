@@ -19,6 +19,8 @@ import math
 
 
 # MAIN THINGS TODO:
+# issues with review of shared decks, need to check what cards are being fetched in each statement
+
 #  Deck creation - done
 #  Review system and displaying flashcards - covered
 #  todo - storing html and escaped fields, what do i need to have. how to enable a dark mode for the html page,
@@ -66,7 +68,73 @@ import math
 # todo - consider adding another table linked to templates which organises how templates are displayed
 # this is referenced above
 
+"""
+Current Progress with sections of the program
 
+DECKS:
+- implemented:
+-- adding decks, selecting configs for review
+- todo:
+-- deletion, renaming
+-- add counts onto deckselected page + a indicator for when there are no cards to review
+
+CARDS:
+- implemented:
+-- adding, editing and browsing cards
+- todo:
+-- deletion, deck (and possibly template) migration, filters when browsing, integration of multimedia (imgs, audio)
+
+Configs:
+- implemented:
+-- Addition, cloning, renaming and deletion, configuration of all settings currently in use.
+- todo:
+-- nothing I can think of as of now, maybe consider more settings for configuration down the line (possibly new order)
+
+Templates:
+- implemented:
+-- Addition, renaming, deletion. 
+-- Adding, renaming, deletion and repositioning of fields + selection of sortfield.
+-- Editing and styling of formats, validity checking (of fields and syntax) and rendering/displaying a preview as HTML in the ui
+-- Parsing of templates when displaying flashcards in review section
+- todo
+-- again, handling of multimedia once storage and integration of this is worked out
+
+Browsing/Public Decks:
+- implemented:
+-- publishing of decks, and the ability for other users to view and add published decks to their library, aswell 
+    as filter public dekcs via a text input
+- todo:
+-- check functionality when reviewing a shared deck (done?), and potentially add optional syncronisation if the creator makes changes
+-- also potentially add an option to allow users to copy a deck (which adds it to their library as if they created it), and the functionality behind this
+
+Login + Account Creation:
+- implemented:
+-- user account creation, password hashing and storing of details in database to allow for future login, 
+-- input checking and error handling in these window
+- todo:
+-- possibly add regex validity checking for emails, currently accepts any string
+
+Study/Review Of Flashcards:
+- implemented:
+-- displaying of text based flashcard fields
+-- queue formation, interval calculation and updating of various fields pertaining to spaced the spaced repetition algorithm
+-- logging of reviews to be utilised when fetching statistics
+- todo:
+-- again intergrate multimedia content
+-- also thoroughly bug test this section, as of writing it seems as though there might be an error with queue formation
+-- issue should be fixed now ^
+
+Statistics:
+- todo:
+-- decide on what statistics to display and how to go about doing this within the ui
+
+Other Features to be Considered once Minimum Completion reached:
+- Importing of delimited files into flashcards
+- Client Server Socketing
+- User Profiles and some kind of Social System
+- Adding salt values to password hashing
+
+"""
 
 
 basictemplate_front = """{{Front}}"""
@@ -132,9 +200,7 @@ class User:
 
 
 class Deck(QStandardItem):
-    # todo - a lot of this class is redundant, loading data and configs is used, everything else is redundant,
-    #  should check add_card code to see if it is needed or can be deleted,
-    def __init__(self, id, user, desc='', creator_access=False, font_size=13, set_bold=False):
+    def __init__(self, id, user, font_size=13, set_bold=False):
         super().__init__()
 
         fnt = QFont()
@@ -155,7 +221,7 @@ class Deck(QStandardItem):
         cur = con.cursor()
         cur.execute("""SELECT d.name, d.id, d.desc, ud.config_id, d.isPublic, d.created_uid, d.isDeleted 
         FROM user_decks ud INNER JOIN decks d ON ud.deck_id = d.id WHERE ud.id = ?""", (self.udid,))
-        print(self.udid)
+        # print(self.udid)
         fetch = cur.fetchone()
         self.name, self.did, self.desc, self.config_id, self.public, self.creator_id, self.isDeleted = fetch
         self.config = Config(self.config_id)
@@ -686,37 +752,69 @@ class DecksMain(QMainWindow):
         for i in range(self.decktree.model().rowCount()):
             deck = self.decktree.model().item(i, 0)
 
+            # might be better to split counts into 3 types then add together + pass values to selected window?
+
             cur.execute(f"""SELECT COUNT (uc.id) FROM user_cards uc 
                         INNER JOIN cards c ON uc.cid = c.id 
                         INNER JOIN user_decks ud ON c.deck_id = ud.deck_id
-                        WHERE ud.id = {deck.udid} AND uc.uid = {self.user.id}
+                        WHERE ud.id = {deck.udid} 
+                        AND uc.uid = {self.user.id}
                         AND (uc.status = 1 OR uc.status = 2 OR uc.status = 3)
                         AND uc.due <= {math.ceil(time() / 86400) * 86400}
                         """)
 
             duecount = cur.fetchone()[0]
 
+            cur.execute(f"""SELECT COUNT (DISTINCT revlog.ucid) FROM revlog INNER JOIN user_cards uc ON revlog.ucid = uc.id 
+                        INNER JOIN cards c on uc.cid = c.id 
+                        INNER JOIN user_decks ud ON c.deck_id = ud.deck_id 
+                        WHERE ud.id = {deck.udid}
+                        AND ud.uid = {self.user.id}
+                        AND (revlog.time >= {math.floor(time() / 86400) * 86400} 
+                        AND revlog.time <= {math.ceil(time() / 86400) * 86400})""")
+
+            reviewedtodaycount = cur.fetchone()[0]
+
+            cur.execute(f"""SELECT COUNT (DISTINCT revlog.ucid) FROM revlog 
+                    INNER JOIN user_cards uc ON revlog.ucid = uc.id 
+                    INNER JOIN cards c on uc.cid = c.id 
+                    INNER JOIN user_decks ud ON c.deck_id = ud.deck_id 
+                    WHERE ud.id = {deck.udid}
+                    AND ud.uid = {self.user.id}
+                    AND (revlog.time >= {math.floor(time() / 86400) * 86400} 
+                    AND revlog.time <= {math.ceil(time() / 86400) * 86400}
+                    AND uc.due <= {math.ceil(time() / 86400) * 86400})""")
+
+            stillinqueuecount = cur.fetchone()[0]
+
+            if duecount >= deck.config.rev_per_day:
+                duecount = deck.config.rev_per_day - reviewedtodaycount + stillinqueuecount
+
             cur.execute(f"""SELECT COUNT (uc.id) FROM user_cards uc 
             INNER JOIN cards c ON uc.cid = c.id 
             INNER JOIN user_decks ud ON c.deck_id = ud.deck_id
-            WHERE ud.id = {deck.udid} AND uc.status = 0
+            WHERE ud.id = {deck.udid} AND uc.status = 0 AND uc.uid = {self.user.id}
             """)
 
             newcount = cur.fetchone()[0]
 
-            if newcount >= deck.config.new_per_day:
-                newcount = deck.config.new_per_day
-
-            cur.execute(f"""SELECT COUNT (revlog.id) FROM revlog INNER JOIN user_cards uc ON revlog.ucid = uc.id 
-            INNER JOIN cards c on uc.cid = c.id 
-            INNER JOIN user_decks ud ON c.deck_id = ud.deck_id 
-            WHERE ud.id = {deck.udid} 
-            AND revlog.status = 0 
-            AND (revlog.time >= {math.floor(time() / 86400) * 86400} 
+            cur.execute(f"""SELECT COUNT (DISTINCT revlog.ucid) FROM revlog
+            INNER JOIN user_cards uc ON revlog.ucid = uc.id
+            INNER JOIN cards c ON uc.cid = c.id
+            INNER JOIN user_decks ud ON c.deck_id = ud.deck_id
+            WHERE ud.id = {deck.udid}
+            AND ud.uid = {self.user.id}
+            AND revlog.status = 0
+            AND (revlog.time >= {math.floor(time() / 86400) * 86400}
             AND revlog.time <= {math.ceil(time() / 86400) * 86400})""")
 
             newreviewedtodaycount = cur.fetchone()[0]
-            newcount -= newreviewedtodaycount
+
+            if newcount + newreviewedtodaycount >= deck.config.new_per_day:
+                newcount = deck.config.new_per_day - newreviewedtodaycount
+
+            if newcount + duecount > deck.config.rev_per_day:
+                newcount = deck.config.rev_per_day - duecount
 
             index = self.decktree.model().index(i, 2)
             self.decktree.model().setData(index, newcount)
@@ -772,6 +870,10 @@ class DeckSelected(QMainWindow):
 
     def study(self):
         self.study = Study(self.user, self.deck)
+
+    def fetchcounts(self):
+
+        pass
 
 
 # maybe create a study class that handles both front and back and switches between the two
@@ -1154,20 +1256,30 @@ class Study:
         # it can be displayed to the user
         if not self.queues[1].empty():
             return True
-        # print("Queue 1 empty")
         con = sqlite3.connect(database)
         cur = con.cursor()
         if not collapse:
-            cutoff = time() + self.collapsetime
-        else:
             cutoff = time()
+        else:
+            cutoff = time() + self.collapsetime
+
+        print(collapse, cutoff)
+
+        # todo consider how to integrate review per day count into here, review and new sections, could possibly use
+        #  some variable to track fetches, or might work out due to how queue formation works sequentially.
+
         cur.execute(
-            """SELECT uc.id FROM user_cards uc INNER JOIN cards c ON uc.cid = c.id INNER JOIN decks d ON
-             c.deck_id = d.id INNER JOIN user_decks ud ON ud.deck_id = d.id WHERE ud.id = ? AND
-              (uc.status = 1 OR uc.status = 3) AND uc.due <= ? ORDER BY uc.id ASC LIMIT ?""",
-            (self.deck.udid, cutoff, self.deck.config.rev_per_day))
+            """SELECT uc.id FROM user_cards uc 
+            INNER JOIN cards c ON uc.cid = c.id 
+            INNER JOIN decks d ON c.deck_id = d.id 
+            WHERE d.id = ? 
+            AND (uc.status = 1 OR uc.status = 3) 
+            AND uc.due <= ? 
+            AND uc.uid = ? 
+            ORDER BY uc.id ASC LIMIT ?""",
+            (self.deck.did, cutoff, self.user.id, self.deck.config.rev_per_day))
         # need to change rework rev_per_day filter
-        # order by ASC here is arbitrary for deterministic ordering (old)
+        # order by id ASC here is arbitrary for deterministic ordering (old)
         # order by due should get the earliest cards first but still suffers from the same issue as above
         for ucid in cur.fetchall():
             self.queues[1].put(Flashcard(ucid[0]))
@@ -1177,22 +1289,36 @@ class Study:
         print(f"Q1 {self.queues[1].queue}")
         if not self.queues[1].empty():
             return True
-        # print("Queue 1 still empty")
 
     def fill_new(self):
         if not self.queues[0].empty():
             return True
-        # print("Queue 0 empty")
-
         con = sqlite3.connect(database)
         cur = con.cursor()
         # this assumes that card id is the same as order for cards to be learnt, might want to assign a deck_idx to
         # user_cards with status 0 that can be changed and allows for custom learning orders
+
+        cur.execute(f"""SELECT COUNT (revlog.id) FROM revlog
+            INNER JOIN user_cards uc ON revlog.ucid = uc.id 
+            INNER JOIN cards c on uc.cid = c.id 
+            INNER JOIN user_decks ud ON c.deck_id = ud.deck_id 
+            WHERE ud.id = {self.deck.udid}
+            AND ud.uid = {self.user.id}
+            AND revlog.status = 0 
+            AND (revlog.time >= {math.floor(time() / 86400) * 86400} 
+            AND revlog.time <= {math.ceil(time() / 86400) * 86400})""")
+
+        newreviewedcount = cur.fetchone()[0]
+
         cur.execute(
-            """SELECT uc.id FROM user_cards uc INNER JOIN cards c ON uc.cid = c.id INNER JOIN decks d ON
-             c.deck_id = d.id INNER JOIN user_decks ud ON ud.deck_id = d.id WHERE ud.id = ? AND 
-            uc.status = 0 ORDER BY uc.id ASC LIMIT ?""",
-            (self.deck.udid, self.deck.config.new_per_day))
+            """SELECT uc.id FROM user_cards uc 
+            INNER JOIN cards c ON uc.cid = c.id 
+            INNER JOIN decks d ON c.deck_id = d.id 
+            WHERE d.id = ? 
+            AND uc.uid = ?
+            AND uc.status = 0 
+            ORDER BY uc.id ASC LIMIT ?""",
+            (self.deck.did, self.user.id, self.deck.config.new_per_day - newreviewedcount))
         for ucid in cur.fetchall():
             self.queues[0].put(Flashcard(ucid[0]))
         # need to store and track cards added to queue and last update time for resetting over new days. IMPORTANT HERE
@@ -1202,35 +1328,40 @@ class Study:
         print(f"Q0: {self.queues[0].queue}")
         if not self.queues[0].empty():
             return True
-        # print("Queue 0 still empty")
 
     def fill_review(self):
         if not self.queues[2].empty():
             return True
-        # print("Queue 2 empty")
+
+        # todo, see earlier in fill_learn()
 
         con = sqlite3.connect(database)
         cur = con.cursor()
         cur.execute(
-            """SELECT uc.id FROM user_cards uc INNER JOIN cards c ON uc.cid = c.id INNER JOIN decks d ON
-             c.deck_id = d.id INNER JOIN user_decks ud ON ud.deck_id = d.id WHERE ud.id = ? AND
-             uc.status = 2 AND uc.due <= ?ORDER BY uc.due ASC LIMIT ?""",
-            (self.deck.udid, math.ceil(time() / 86400) * 86400, self.deck.config.rev_per_day))
+            """SELECT uc.id FROM user_cards uc
+             INNER JOIN cards c ON uc.cid = c.id 
+             INNER JOIN decks d ON c.deck_id = d.id
+             INNER JOIN user_decks ud ON ud.deck_id = d.id 
+             WHERE ud.id = ? 
+             AND uc.status = 2 
+             AND uc.due <= ? 
+             AND ud.uid = ? ORDER BY uc.due ASC LIMIT ?""",
+            (self.deck.udid, math.ceil(time() / 86400) * 86400, self.user.id, self.deck.config.rev_per_day))
         for ucid in cur.fetchall():
             self.queues[2].put(Flashcard(ucid[0]))
         cur.close()
         con.close()
+
         # again need to ensure limit is tracked and updated in database
-        # should retrieve all due cards then shuffle and limit number based on settings
+        # should retrieve all due cards then shuffle and limit number based on settings?
+
         if not self.queues[2].empty():
             return True
-
-        # print("Queue 2 still empty")
 
     def get_card(self):
         card = self._get_card()
         if card:
-            self.reps += 1
+            self.reps += 1  # currently not used
         return card
 
     def _get_card(self):
@@ -1241,7 +1372,7 @@ class Study:
         if c:
             return c
 
-        # new first, or time for one?
+        # new first, or time for one? (to be implemented in review settings, either new first, last [or mixed])
         if self.time_for_new_card():
             c = self.get_new_card()
             if c:
@@ -2088,7 +2219,7 @@ class TemplatesWindow(QWidget):
             addbasictemplate(self.user.id, cur)
         else:
             cur.execute("""INSERT INTO templates (fields, sortfield, modified, created_uid, front_format, back_format,
-             styling, name) VALUES (?, ?, ?, ?, ?, ?, ?)""", (template.fields, template.sortfield, time(), self.user.id,
+             styling, name) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""", (template.fields, template.sortfield, time(), self.user.id,
                                                               template.front, template.back, template.styling, name))
             # self.setWindowState(Qt.WindowActive)
         con.commit()
@@ -2851,9 +2982,9 @@ class PublicDeckView(QWidget):
                 cid = cid[0]
                 cur.execute("""SELECT id FROM user_cards WHERE cid = ? AND uid = ?""", (cid, self.user.id))
                 if not cur.fetchone():
-                    cur.execute("""INSERT INTO user_cards (uid, cid, ef, ivl, type, status, reps, lapses, odue, left)
-                                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                                (self.user.id, cid, self.deck.config.new_init_ef, None, 0, 0, 0, 0, time(), 0))
+                    cur.execute("""INSERT INTO user_cards (uid, cid, ivl, type, status, reps, lapses, odue, left)
+                                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                                (self.user.id, cid, None, 0, 0, 0, 0, time(), 0))
             self.addbutton.setText("Remove")
 
         else:

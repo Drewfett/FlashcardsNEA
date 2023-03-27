@@ -428,6 +428,9 @@ font: 16pt;color:rgb(47, 50, 58);</string>
      <height>36</height>
     </rect>
    </property>
+   <property name="nativeMenuBar">
+    <bool>true</bool>
+   </property>
    <widget class="QMenu" name="menuFile">
     <property name="title">
      <string>File</string>

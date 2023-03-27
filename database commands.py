@@ -19,7 +19,7 @@ def create_tables(db):
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         deck_id INTEGER,
         template_id INTEGER,
-        format_id INTEGER
+        format_id INTEGER,
         modified INT,
         data TEXT,
         isPublic INT,
@@ -86,21 +86,18 @@ def create_tables(db):
                 )
     """
 
-    create_formats = """CREATE TABLE IF NOT EXISTS formats (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        name TEXT,
-        template_id INT,
-        creator_id INT,
-        front TEXT,
-        back TEXT,
-        styling TEXT,
-        modified INT,
-        foreign key (template_id) REFERENCES templates(id)
-    )
-    """
-
-
-    # add name column
+    # create_formats = """CREATE TABLE IF NOT EXISTS formats (
+    #     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    #     name TEXT,
+    #     template_id INT,
+    #     creator_id INT,
+    #     front TEXT,
+    #     back TEXT,
+    #     styling TEXT,
+    #     modified INT,
+    #     foreign key (template_id) REFERENCES templates(id)
+    # )
+    # """
 
     create_configs = """CREATE TABLE IF NOT EXISTS configs (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -116,10 +113,10 @@ def create_tables(db):
         lapse_delays TEXT,
         lapse_percent INT,
         min_ivl INT,
-        leech_fails INT
-    name TEXT
-    )
-    """
+        leech_fails INT,
+        name TEXT
+        )
+        """
 
     create_revlog = """CREATE TABLE IF NOT EXISTS revlog (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -143,7 +140,7 @@ def create_tables(db):
     conn = sqlite3.connect(db)
     cur = conn.cursor()
     create_statements = [create_users, create_cards, create_user_cards, create_decks, create_user_decks,
-                         create_templates, create_configs, create_revlog, create_formats]
+                         create_templates, create_configs, create_revlog]
     for statement in create_statements:
         cur.execute(statement)
     conn.commit()
@@ -155,72 +152,12 @@ cur = con.cursor()
 # cur.execute("DROP TABLE templates")
 # cur.execute("DROP TABLE user_cards")
 
-# cur.execute("""DROP TABLE templates""")
+cur.execute("""DROP TABLE cards""")
 create_tables(db)
-# cur.execute("""ALTER TABLE formats ADD name TEXT""")
-# cur.execute("""DROP TABLE cards""")
-# cur.execute(create_cards)
-# cur.execute(create_templates)
-# cur.execute(create_decks)
-# cur.execute("""INSERT INTO cards (id, deck_id, ease_factor, interval)
-# VALUES (1, 1, 2.5, 1)
-# """)
-# cur.execute("""INSERT INTO templates
-# VALUES (1, "basic flashcard", "front,back")
-# """)
-# cur.execute("""INSERT INTO decks (id, name, description)
-# VALUES (1, "Test Deck", "testing interlinking tables")
-# """)
-# cur.execute("""UPDATE cards
-# SET data = "What currency is used in Japan?,Yen"
-# WHERE id = 2
-# """)
-# cur.execute("SELECT * FROM cards")
-# res = cur.fetchall()
-# print(res)
 
-# cur.execute("""DROP TABLE templates""")
-# cur.execute("""DROP TABLE users""")
-# cur.execute(create_cards)
-# cur.execute(create_decks)
-# cur.execute("""ALTER TABLE cards
-# RENAME COLUMN queue_status TO status;""")
-#
-# cur.execute("""insert into configs (
-#     name,
-#     lapse_delays,
-#     lapse_percent,
-#     leech_fails,
-#     max_ivl,
-#     min_ivl,
-#     new_delays,
-#     new_grad_ivls,
-#     new_init_ef,
-#     new_per_day,
-#     rev_easy_factor,
-#     rev_hard_factor,
-#     rev_per_day,
-#     uid)
-# values (
-#     'default',
-#     600,
-#     50,
-#     8,
-#     8640000000000,
-#     86400,
-#     '60,600',
-#     '1,4',
-#     250,
-#     10,
-#     130,
-#     120,
-#     200,
-#     2)"""
-# )
-# cur.execute("ALTER TABLE configs ADD COLUMN name TEXT")
 
-cur.execute("""SELECT * FROM formats""")
-cur.execute(f"""INSERT INTO formats (name, template_id, creator_id, modified) VALUES ('basic', 1, 1, {time()})""")
+# cur.execute("""SELECT * FROM formats""")
+# cur.execute(f"""INSERT INTO formats (name, template_id, creator_id, modified) VALUES ('basic', 1, 1, {time()})""")
 print(cur.fetchall())
 con.commit()
 cur.close()
