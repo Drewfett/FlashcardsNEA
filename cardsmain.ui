@@ -337,7 +337,7 @@ font: 13pt;color:rgb(47, 50, 58)</string>
              <x>0</x>
              <y>0</y>
              <width>994</width>
-             <height>309</height>
+             <height>297</height>
             </rect>
            </property>
            <property name="styleSheet">
@@ -349,6 +349,19 @@ font: 13pt;color:rgb(47, 50, 58)</string>
        </layout>
       </item>
      </layout>
+    </item>
+    <item>
+     <widget class="QLabel" name="alertlabel">
+      <property name="styleSheet">
+       <string notr="true">color:red;</string>
+      </property>
+      <property name="text">
+       <string/>
+      </property>
+      <property name="alignment">
+       <set>Qt::AlignCenter</set>
+      </property>
+     </widget>
     </item>
     <item>
      <spacer name="verticalSpacer_2">

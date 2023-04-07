@@ -259,7 +259,7 @@ font: 16pt;color:rgb(47, 50, 58)</string>
            <x>0</x>
            <y>0</y>
            <width>828</width>
-           <height>658</height>
+           <height>634</height>
           </rect>
          </property>
          <layout class="QVBoxLayout" name="verticalLayout_2">
@@ -324,6 +324,19 @@ font: 16pt;color:rgb(47, 50, 58)</string>
        </spacer>
       </item>
      </layout>
+    </item>
+    <item>
+     <widget class="QLabel" name="alertlabel">
+      <property name="styleSheet">
+       <string notr="true">color:red;</string>
+      </property>
+      <property name="text">
+       <string/>
+      </property>
+      <property name="alignment">
+       <set>Qt::AlignCenter</set>
+      </property>
+     </widget>
     </item>
     <item>
      <layout class="QHBoxLayout" name="horizontalLayout_2">

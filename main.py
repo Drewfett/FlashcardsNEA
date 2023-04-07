@@ -1,22 +1,31 @@
+import decimal
+import random
 import sys
-import re
+
+import mplcursors
 from PyQt5 import QtWidgets, Qt
 from PyQt5.QtGui import QColor, QFont
 from PyQt5.uic import loadUi
 from PyQt5.QtWidgets import QDialog, QApplication, QAction, QStackedWidget, QMainWindow, QMenu, QToolButton, QLabel, \
     QScrollArea, QSizePolicy, QVBoxLayout, QHeaderView, QCheckBox, QLineEdit, QComboBox, QSpinBox, QTableView, \
-    QSpacerItem, QAbstractItemView, QTreeView, QPushButton, QListView, QRadioButton, QTextEdit
+    QSpacerItem, QAbstractItemView, QTreeView, QPushButton, QListView, QRadioButton, QTextEdit, QGridLayout, QHBoxLayout
 from PyQt5.Qt import QStandardItem, QStandardItemModel, QWidget
 from PyQt5.QtCore import Qt, QModelIndex
 from PyQt5.QtWebEngineWidgets import QWebEngineView
 
 import sqlite3
 from queue import Queue
-from time import time
+from time import time, mktime
+import re
 import datetime
 import math
-
-
+import numpy as np
+import matplotlib.patches as mpatches
+import pandas as pd
+from matplotlib import ticker
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
+from matplotlib.figure import Figure
+from matplotlib.ticker import MaxNLocator
 
 # MAIN THINGS TODO:
 # issues with review of shared decks, need to check what cards are being fetched in each statement
@@ -26,12 +35,30 @@ import math
 #  todo - storing html and escaped fields, what do i need to have. how to enable a dark mode for the html page,
 #   + how to go about storing sound and image files in a database or somewhere else and referencing them
 #  need to write some kind of interpreter for html where fields are converted into their data.
+# mainly done ^ still could try to work out how to use dark mode.
 
 
-# STATS WINDOWS Important - but not key functionality - would certainly add to complexity due to aggregate functions,
+# note todo - include collapse condition when showing counts for learning/relearning cards
+
+
+# STATS WINDOWS Important - would add to complexity due to aggregate functions,
 # try to get this working asap
-
+# IDEAS:
+# statistics by deck and whole collection
+# - no of cards studied today, total time spent studying, avg time, counts for each difficulty and %
+# correct answers on mature cards (i.e. hard, good or easy on cards with previous intervals of > 21/30 days)
+# cards due in the future, plot by days ahead and no
+# [work out way to show historic reviews (number on each day)] - matplotlib imshow(z)?
+# ^ breakdown of these past reviews on whether cards were young, mature, learning, relearning, new etc.
+# [both time spent and no of reviews] ^
+# Pie chart breakdown of cards in the deck
+# Plot of card intervals
+# bar chart of card ease factors
+# Success rate breakdown by hours over a given time frame
+# Answer buttons pressed for each card type - (re+)learning, young, mature
+# When cards were added? Not sure how this would be done or if it serves mutch purpose
 # also want session statistics maybe?
+# be open to any other ideas or suggestions
 
 #  Templates ^ part of displaying the flashcards - done, some testing done but do so more thoroughly later
 #      - will need to add a field to the cards table for format type, could remove template field, but could prove
@@ -71,12 +98,15 @@ import math
 """
 Current Progress with sections of the program
 
+# possibly connect a menu bar to access templates, configs options from anywhere, could add other menubar options for
+# card window to handle moving cards etc or just right click.
+
 DECKS:
 - implemented:
 -- adding decks, selecting configs for review
 - todo:
 -- deletion, renaming
--- add counts onto deckselected page + a indicator for when there are no cards to review
+-- add counts onto deckselected page + a indicator for when there are no cards to review (+ disconnect button)
 
 CARDS:
 - implemented:
@@ -136,7 +166,6 @@ Other Features to be Considered once Minimum Completion reached:
 
 """
 
-
 basictemplate_front = """{{Front}}"""
 basictemplate_back = """{{FrontSide}}
 <hr>
@@ -157,7 +186,7 @@ def addbasictemplate(uid, cur):
     cur.execute(
         """INSERT INTO templates (fields, sortfield, modified, created_uid, front_format, back_format, styling, name) VALUES 
         (?, ?, ?, ?, ?, ?, ?, ?)""", (basictemplate_fields, basictemplate_sort, time(), uid, basictemplate_front,
-                                   basictemplate_back, basictemplate_styling, 'Basic'))
+                                      basictemplate_back, basictemplate_styling, 'Basic'))
 
 
 default_config_insert = """INSERT INTO configs (
@@ -221,7 +250,6 @@ class Deck(QStandardItem):
         cur = con.cursor()
         cur.execute("""SELECT d.name, d.id, d.desc, ud.config_id, d.isPublic, d.created_uid, d.isDeleted 
         FROM user_decks ud INNER JOIN decks d ON ud.deck_id = d.id WHERE ud.id = ?""", (self.udid,))
-        # print(self.udid)
         fetch = cur.fetchone()
         self.name, self.did, self.desc, self.config_id, self.public, self.creator_id, self.isDeleted = fetch
         self.config = Config(self.config_id)
@@ -298,7 +326,6 @@ class Flashcard(QStandardItem):
         self.cid, self.data, self.deck_id, self.modified, self.template_id, self.creator_id, self.ease_factor, self.interval, self.lapses, self.left, \
             self.status, self.reps, self.type, self.due, self.original_due = cur.fetchone()
 
-
         cur.execute("""SELECT fields, sortfield
                                 FROM templates
                                 WHERE id = ?
@@ -307,7 +334,6 @@ class Flashcard(QStandardItem):
 
         self.fields = self.fields.split(",")
         self.data = self.data.split(",")
-
 
         self.zip = dict(zip(self.fields, self.data))
 
@@ -331,7 +357,7 @@ class Flashcard(QStandardItem):
                         modified = ?,
                         template_id = ?
                         WHERE id = ?
-                        """, (data, self.deck_id, self.modified, self.template, self.cid))
+                        """, (data, self.deck_id, self.modified, self.template_id, self.cid))
         else:
             print("You are not the creator of this card")
         con.commit()
@@ -344,7 +370,6 @@ class Flashcard(QStandardItem):
         self.interval = new_ivl
         self.ease_factor = new_ef
         self.due = new_due
-        print(f"Next due: {datetime.datetime.fromtimestamp(self.due)}")
         cur.execute("""UPDATE user_cards SET 
                ivl = ?,
                ef = ?,
@@ -361,7 +386,6 @@ class Flashcard(QStandardItem):
 
 
 class Config(QStandardItem):
-    # todo add fetching of spaced repetition settings
     def __init__(self, configid, font_size=13, set_bold=False):
         super().__init__()
         """
@@ -653,7 +677,7 @@ class DecksMain(QMainWindow):
         # initialising the tree model
         self.treeModel = QStandardItemModel(0, 4, self.decktree)
         self.treeModel.setHeaderData(0, Qt.Horizontal, "Deck")
-        self.treeModel.setHeaderData(1, Qt.Horizontal, "Desc")
+        self.treeModel.setHeaderData(1, Qt.Horizontal, "Description")
         self.treeModel.setHeaderData(2, Qt.Horizontal, "New")
         self.treeModel.setHeaderData(3, Qt.Horizontal, "Due")
 
@@ -670,11 +694,15 @@ class DecksMain(QMainWindow):
         self.decktree.header().setSectionResizeMode(3, QHeaderView.Fixed)
         self.decktree.expandAll()
 
+        self.decktree.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.decktree.customContextMenuRequested.connect(self.deckmenu)
+
         self.adddeckbutton.clicked.connect(self.adddeck)
         self.refreshtree()
 
     def refresh(self):
         self.refreshtree()
+        self.alertlabel.setText("")
 
     def adddeck(self):
         self.adddeckwindow = AddDeckWindow(self.user)
@@ -821,6 +849,73 @@ class DecksMain(QMainWindow):
             index = self.decktree.model().index(i, 3)
             self.decktree.model().setData(index, duecount)
 
+    def deckmenu(self, position):
+        menu = QMenu()
+        rename = QAction(self.tr("Rename"), menu)
+        rename.triggered.connect(self.rename)
+        delete = QAction(self.tr("Delete"), menu)
+        delete.triggered.connect(self.delete)
+        menu.addActions([rename, delete])
+        menu.exec_(self.decktree.viewport().mapToGlobal(position))
+
+    def rename(self):
+        deck = self.decktree.model().item(self.decktree.currentIndex().row())
+        if deck.creator_id != self.user.id:
+            self.alertlabel.setText("You are not the creator of this deck")
+            return
+        self.renamewindow = NameWindow()
+        self.renamewindow.okbutton.clicked.connect(lambda: self.confirmrename(deck))
+        self.renamewindow.namelineedit.setText(deck.name)
+        self.renamewindow.show()
+
+    def confirmrename(self, deck):
+        newname = self.renamewindow.namelineedit.text()
+        deck.name = newname
+        deck.save()
+        self.renamewindow.deleteLater()
+        self.refresh()
+
+    def delete(self):
+        deck = self.decktree.model().item(self.decktree.currentIndex().row())
+        deletedialog = DeleteDeckDialog(deck, self.user)
+        if deletedialog.allowdeletion:
+            deletedialog.buttonBox.accepted.connect(lambda: self.confirmdelete(deck))
+        deletedialog.exec()
+
+    def confirmdelete(self, deck):
+        # difference between deleting and removing of a public deck is that deleting also deletes all cards,
+        # removing keeps card progress
+
+        con = sqlite3.connect(database)
+        cur = con.cursor()
+        cur.execute("""SELECT uc.id FROM user_cards uc 
+        INNER JOIN cards c ON uc.cid = c.id
+        INNER JOIN decks d on c.deck_id = d.id
+        WHERE uc.uid = ?
+        AND d.id = ?""", (self.user.id, deck.did))
+
+        for fetch in cur.fetchall():
+            ucid = fetch[0]
+            cur.execute("""DELETE FROM user_cards WHERE id = ?""", (ucid,))
+
+        cur.execute("""DELETE FROM user_decks
+        WHERE deck_id = ?
+        AND uid = ?""", (deck.did, self.user.id))
+
+        # checks if other users have access to the deck
+        cur.execute("""SELECT id FROM user_decks
+        WHERE deck_id = ?""", (deck.did,))
+
+        # deletes the deck and associated cards if no other users have access
+        if not cur.fetchone():
+            cur.execute("""DELETE FROM cards WHERE deck_id = ?""", (deck.did,))
+            cur.execute("""DELETE FROM decks WHERE id = ?""", (deck.did,))
+
+        con.commit()
+        cur.close()
+        con.close()
+        self.refresh()
+
 
 class AddDeckWindow(QWidget):
     def __init__(self, user):
@@ -851,6 +946,31 @@ class AddDeckWindow(QWidget):
                 print(e)
 
 
+class DeleteDeckDialog(QDialog):
+    def __init__(self, deck, user):
+        super().__init__()
+        self.deck = deck
+        self.user = user
+        loadUi("deletedeck.ui", self)
+        self.settext()
+
+    def settext(self):
+        con = sqlite3.connect(database)
+        cur = con.cursor()
+        cur.execute("""SELECT isPublic FROM decks WHERE id = ?""", (self.deck.did,))
+        deckpublic = cur.fetchone()[0]
+        if deckpublic == 1 and (self.deck.creator_id == self.user):
+            self.allowdeletion = False
+            self.label.setText("""The deck is currently public, please delist it before deleting this deck""")
+        else:
+            self.allowdeletion = True
+            cur.execute("""SELECT COUNT (id) FROM cards WHERE deck_id = ?""", (self.deck.did,))
+            cardcount = cur.fetchone()[0]
+            self.label.setText(f"""Delete {self.deck.name} and {cardcount} cards associated with it?""")
+        cur.close()
+        con.close()
+
+
 class DeckSelected(QMainWindow):
     def __init__(self, user, deck):
         self.user = user
@@ -859,10 +979,11 @@ class DeckSelected(QMainWindow):
         loadUi("deckselected.ui", self)
         connectmainbuttons(self)
 
+        self.fetchcounts()
+
         self.deckname.setText(deck.name)
         # self.backbutton.clicked.connect(self.back)
         self.deckoptionsbutton.clicked.connect(self.deckoptions)
-        self.studybutton.clicked.connect(self.study)
 
     def deckoptions(self):
         self.optionswindow = DeckOptions(self.user, self.deck)
@@ -872,14 +993,38 @@ class DeckSelected(QMainWindow):
         self.study = Study(self.user, self.deck)
 
     def fetchcounts(self):
+        tempstudywindow = Study(self.user, self.deck, counts=True)
+        newcount, learningcount, reviewcount = tempstudywindow.fetchcounts()
+        if not newcount == learningcount == reviewcount == 0:
+            self.newcount.setText(f"{newcount}")
+            self.learningcount.setText(f"{learningcount}")
+            self.reviewcount.setText(f"{reviewcount}")
+            self.studybutton.clicked.connect(self.study)
+        else:
+            self.clearlayout(self.countslayout)
+            label = QLabel("Congratulations! You have finished studying this deck for now.")
+            label.setAlignment(Qt.AlignHCenter)
+            font = QFont()
+            font.setPointSize(22)
+            label.setFont(font)
+            self.countslayout.addWidget(label)
 
-        pass
+    def clearlayout(self, layout):
+        # recursive function to clear all the layouts and widgets within the layout passed as a parameter
+        if layout is not None:
+            while layout.count():
+                item = layout.takeAt(0)
+                widget = item.widget()
+                if widget is not None:
+                    widget.deleteLater()
+                else:
+                    self.clearlayout(item.layout())
 
 
 # maybe create a study class that handles both front and back and switches between the two
 
 class Study:
-    def __init__(self, user, deck):
+    def __init__(self, user, deck, counts=False):
         self.user = user
         self.deck = deck
         self.card = None
@@ -889,12 +1034,18 @@ class Study:
 
         #########################
 
-        self.queues = [Queue()] * 4
+        self.queues = [Queue(), Queue(), Queue()]
+        # could rewrite to have 3 seperate queues
+
         self.collapsetime = 1200
-        # todo add configuration for this in user preferences, hard code rn ^
-        self.reps = 0 # not used rn
+        self.newspread = 0  # (0 = new first, 1 = new last, [2 = spread out])
+        # todo add configuration for these 2 in user preferences, hard code rn ^
+        self.reps = 0  # not used rn
 
         ##################
+
+        if counts:
+            return
 
         self.studyfront = StudyFront()
         self.studyfront.flipbutton.clicked.connect(self.flip)
@@ -930,6 +1081,15 @@ class Study:
         - if yes loop
         """
 
+    def fetchcounts(self):
+        self.fill_new()
+        self.fill_learn(collapse=True)
+        self.fill_review()
+        newcount = len(list(self.queues[0].queue))
+        learncount = len(list(self.queues[1].queue))
+        reviewcount = len(list(self.queues[2].queue))
+        return newcount, learncount, reviewcount
+
     def startreview(self):
         self.loadcard()
         if not self.card:
@@ -940,7 +1100,8 @@ class Study:
 
     def showfront(self):
         front = self.fillfront()
-        self.studyfront.htmlview.setHtml(f"""<head><style>{self.template.styling}</style></head> <body class='card'>{front}</body>""")
+        self.studyfront.htmlview.setHtml(
+            f"""<head><style>{self.template.styling}</style></head> <body class='card'>{front}</body>""")
         stack.setCurrentIndex(9)
 
     def fillfront(self):
@@ -978,70 +1139,43 @@ class Study:
                 stack.removeWidget(widget)
                 widget.deleteLater()
                 stack.setCurrentIndex(8)
+                stack.widget(8).fetchcounts()
             return
 
     def flip(self):
         stack.setCurrentIndex(10)
-        self.showback()
         self.showback()
 
     def showback(self):
         back = self.fillback()
         # error because of == 0 or 1
         if self.card.status == 0 or self.card.status == 1:
-            self.new_ivls, self.due_times = self.calculateintervals1()
+            self.new_ivls, self.due_ivls = self.calculateintervals1()
         elif self.card.status == 2:
-            self.new_ivls, self.due_times = self.calculateintervals2()
+            self.new_ivls, self.due_ivls = self.calculateintervals2()
         elif self.card.status == 3:
-            self.new_ivls, self.due_times = self.calculateintervals3()
+            self.new_ivls, self.due_ivls = self.calculateintervals3()
 
-        # todo when setting text convert these to more manageable units ie mins -> hours -> days -> months float -> float years
-        self.studyback.againivllabel.setText(self.converttime(self.new_ivls[0]))
-        self.studyback.hardivllabel.setText(self.converttime(self.new_ivls[1]))
-        self.studyback.goodivllabel.setText(self.converttime(self.new_ivls[2]))
-        self.studyback.easyivllabel.setText(self.converttime(self.new_ivls[3]))
+        self.studyback.againivllabel.setText(converttime(self.due_ivls[0]))
+        self.studyback.hardivllabel.setText(converttime(self.due_ivls[1]))
+        self.studyback.goodivllabel.setText(converttime(self.due_ivls[2]))
+        self.studyback.easyivllabel.setText(converttime(self.due_ivls[3]))
 
-        self.studyback.htmlview.setHtml(f"""<head><style>{self.template.styling}</style></head> <body class='card'>{back}</body>""")
+        self.studyback.htmlview.setHtml(
+            f"""<head><style>{self.template.styling}</style></head> <body class='card'>{back}</body>""")
         stack.setCurrentIndex(10)
-
-    def converttime(self, seconds):
-        duration = datetime.timedelta(seconds=seconds)
-
-        years = duration.days // 365
-        months = duration.days // 30.44 % 12
-        days = duration.days % 30.44
-        hours = duration.seconds // 3600
-        minutes = (duration.seconds // 60) % 60
-
-        if years > 0:
-            return f"{years:.1f}y"
-        elif months > 0:
-            return f"{months:.1f}mo"
-        elif days > 0:
-            return f"{days:.0f}d"
-        elif hours > 0:
-            return f"{hours:.0f}h"
-        else:
-            return f"{minutes:.0f}m"
 
     def review(self, ease):
         self.endtime = time()
-        print(f"ease = {ease}")
+        # print(f"ease = {ease}")
         self.update_interval(ease)
         self.startreview()
 
     def update_interval(self, ease):
         # NOTE FOR WRITEUP, CAN FIND OLD VERSION OF THIS FUNCTION ON GOOGLE DRIVE TO DEMONSTRATE HOW IT HAS
         # BEEN REFACTORED - WILL DEFINITELY ALLOW FOR EASIER EXPLANATION
-        # todo take card status and calculate a set of intervals for each button -> store and display these
 
         new_ef = self.card.ease_factor  # (for convenience if not changed)
-
-        # needs to be stored in user preferences
-        colConf = {
-            'newSpread': 0,
-            'collapseTime': 1200,
-        }
 
         # only changes in left and EF handled here
         self.card.reps += 1
@@ -1050,7 +1184,7 @@ class Study:
         if self.card.status == 0:
             new_delays = [int(x) for x in self.deck.config.new_delays.split(',')]
             self.card.left = len(new_delays)
-            print(f"set left = {self.card.left}")
+            # print(f"set left = {self.card.left}")
             new_ef = self.deck.config.new_init_ef
             self.card.status = 1
 
@@ -1083,8 +1217,10 @@ class Study:
             elif ease == 3:
                 new_ef = self.card.ease_factor + 20
 
+            if new_ef < 130:
+                new_ef = 130
+
         elif self.card.status == 3:
-            # print("status: relearning")
             # todo add in min ivl checking
             lapse_delays = [int(x) for x in self.deck.config.lapse_delays.split(',')]
             min_ivl = self.deck.config.min_ivl * 86400
@@ -1104,7 +1240,7 @@ class Study:
         else:
             assert 0
 
-        new_due = self.due_times[ease]
+        new_due = time() + self.due_ivls[ease]
         new_ivl = self.new_ivls[ease]
 
         self.log_review(ease, status_log, new_ivl, new_ef)
@@ -1119,13 +1255,13 @@ class Study:
         # might want to replace this with temp values then return and assign to self.cards,
         # in order to be able to log old/new ivls etc. - done
 
-        due_times = [0] * 4
+        due_ivls = [0] * 4
         new_ivls = [0] * 4
 
         # print(new_delays)
 
         new_ivls[0] = new_delays[0]
-        due_times[0] = time() + new_ivls[0]
+        due_ivls[0] = new_ivls[0]
 
         if self.card.status == 0:
             left = len(new_delays)
@@ -1134,89 +1270,95 @@ class Study:
 
         if left != 1:
             new_ivls[1] = (new_delays[-left] + new_delays[-left + 1]) / 2
-            due_times[1] = time() + new_ivls[1]
+            due_ivls[1] = new_ivls[1]
         elif left == 1:
             new_ivls[1] = new_delays[-left]
-            due_times[1] = time() + new_ivls[1]
+            due_ivls[1] = new_ivls[1]
 
         if left - 1 == 0:
             new_ivls[2] = new_grad_ivls[0] * 86400
-            due_times[2] = time() + new_ivls[2]
+            due_ivls[2] = new_ivls[2]
         else:
-            new_ivls[2] = new_delays[-(left-1)]
-            due_times[2] = time() + new_ivls[2]
+            new_ivls[2] = new_delays[-(left - 1)]
+            due_ivls[2] = new_ivls[2]
 
         new_ivls[3] = new_grad_ivls[1] * 86400
-        due_times[3] = time() + new_ivls[3]
+        due_ivls[3] = new_ivls[3]
 
-        return new_ivls, due_times
+        return new_ivls, due_ivls
 
     def calculateintervals2(self):
         # for status = 2 (review)
-        due_times = [0] * 4
-        new_ivls = [0 ] * 4
+        due_ivls = [0] * 4
+        new_ivls = [0] * 4
 
         lapse_delays = [int(x) * 60 for x in self.deck.config.lapse_delays.split(',')]
         min_ivl = self.deck.config.min_ivl * 86400
         max_ivl = self.deck.config.max_ivl * 86400
 
+        # interval is changed here, but because the card has been failed, interval is not taken as the next due time
+        # since the card enters the relearning state
         new_ivls[0] = self.card.interval * self.deck.config.lapse_percent / 100
         if new_ivls[0] < min_ivl:
             new_ivls[0] = min_ivl
-        due_times[0] = time() + lapse_delays[0]
+        due_ivls[0] = lapse_delays[0]
 
         new_ivls[1] = self.card.interval * self.deck.config.rev_hard_factor / 100
-        due_times[1] = time() + new_ivls[1]
+        due_ivls[1] = new_ivls[1]
 
         if math.ceil(self.card.due / 86400) * 86400 < math.ceil(time() / 86400) * 86400:
             bonus = (math.ceil(time() / 86400) * 86400 - math.ceil(self.card.due / 86400) * 86400) / 2
         else:
             bonus = 0
         new_ivls[2] = (self.card.interval + bonus) * self.card.ease_factor / 100
-        due_times[2] = time() + new_ivls[2]
+        due_ivls[2] = new_ivls[2]
 
         if math.ceil(self.card.due / 86400) * 86400 < math.ceil(time() / 86400) * 86400:
             bonus = (math.ceil(time() / 86400) * 86400 - math.ceil(self.card.due / 86400) * 86400)
         else:
             bonus = 0
         new_ivls[3] = (self.card.interval + bonus) * (self.card.ease_factor / 100) * (
-                    self.deck.config.rev_easy_factor / 100)
-        due_times[3] = time() + new_ivls[3]
+                self.deck.config.rev_easy_factor / 100)
+        due_ivls[3] = new_ivls[3]
 
-        return new_ivls, due_times
+        # maybe error here in calculating easy ivl
+
+        return new_ivls, due_ivls
 
     def calculateintervals3(self):
         # for status 3 (relearning)
         # print("status: relearning")
-        lapse_delays = [int(x) for x in self.deck.config.lapse_delays.split(',')]
+        lapse_delays = [int(x) * 60 for x in self.deck.config.lapse_delays.split(',')]
         min_ivl = self.deck.config.min_ivl * 86400
 
-        due_times = [0] * 4
+        due_ivls = [0] * 4
         new_ivls = [0] * 4
+
+        print(lapse_delays)
 
         new_ivls[0] = self.card.interval * self.deck.config.lapse_percent / 100
         if new_ivls[0] < min_ivl:
             new_ivls[0] = min_ivl
-        due_times[0] = time() + lapse_delays[0]
+        due_ivls[0] = lapse_delays[0]
 
         # DON'T CHANGE INTERVALS HERE
         if self.card.left != 1:
-            due_times[1] = time() + (self.deck.config.lapse_percent[-self.card.left] + self.deckc.config.lapse_percent[
+            due_ivls[1] = time() + (self.deck.config.lapse_percent[-self.card.left] + self.deck.config.lapse_percent[
                 -self.card.left + 1]) / 2
         if self.card.left == 1:
-            due_times[1] = time() + lapse_delays[-self.card.left]
+            due_ivls[1] = lapse_delays[-self.card.left]
         new_ivls[1] = self.card.interval
 
         if self.card.left - 1 == 0:
-            due_times[2] = time() + self.card.interval
+            due_ivls[2] = self.card.interval
         else:
-            due_times[2] = time() + lapse_delays[-(self.card.left - 1)]
+            due_ivls[2] = lapse_delays[-(self.card.left - 1)]
         new_ivls[2] = self.card.interval
 
-        due_times[3] = time() + self.card.interval
+        due_ivls[3] = self.card.interval
         new_ivls[3] = self.card.interval
 
-        return new_ivls, due_times
+        return new_ivls, due_ivls
 
     def log_review(self, ease, status_log, new_ivl, new_ef):
         # something wrong here??
@@ -1256,14 +1398,13 @@ class Study:
         # it can be displayed to the user
         if not self.queues[1].empty():
             return True
+
         con = sqlite3.connect(database)
         cur = con.cursor()
         if not collapse:
             cutoff = time()
         else:
             cutoff = time() + self.collapsetime
-
-        print(collapse, cutoff)
 
         # todo consider how to integrate review per day count into here, review and new sections, could possibly use
         #  some variable to track fetches, or might work out due to how queue formation works sequentially.
@@ -1283,10 +1424,8 @@ class Study:
         # order by due should get the earliest cards first but still suffers from the same issue as above
         for ucid in cur.fetchall():
             self.queues[1].put(Flashcard(ucid[0]))
-            self.queues[1] = self.queues[1]
         cur.close()
         con.close()
-        print(f"Q1 {self.queues[1].queue}")
         if not self.queues[1].empty():
             return True
 
@@ -1298,7 +1437,7 @@ class Study:
         # this assumes that card id is the same as order for cards to be learnt, might want to assign a deck_idx to
         # user_cards with status 0 that can be changed and allows for custom learning orders
 
-        cur.execute(f"""SELECT COUNT (revlog.id) FROM revlog
+        cur.execute(f"""SELECT COUNT (DISTINCT revlog.ucid) FROM revlog
             INNER JOIN user_cards uc ON revlog.ucid = uc.id 
             INNER JOIN cards c on uc.cid = c.id 
             INNER JOIN user_decks ud ON c.deck_id = ud.deck_id 
@@ -1325,7 +1464,6 @@ class Study:
         # so that more and more new cards don't keep getting added
         cur.close()
         con.close()
-        print(f"Q0: {self.queues[0].queue}")
         if not self.queues[0].empty():
             return True
 
@@ -1345,7 +1483,7 @@ class Study:
              WHERE ud.id = ? 
              AND uc.status = 2 
              AND uc.due <= ? 
-             AND ud.uid = ? ORDER BY uc.due ASC LIMIT ?""",
+             AND uc.uid = ? ORDER BY uc.due ASC LIMIT ?""",
             (self.deck.udid, math.ceil(time() / 86400) * 86400, self.user.id, self.deck.config.rev_per_day))
         for ucid in cur.fetchall():
             self.queues[2].put(Flashcard(ucid[0]))
@@ -1455,16 +1593,6 @@ class StudyBack(QMainWindow):
 
 
 class DeckOptions(QWidget):
-    """
-    This "window" is a QWidget. If it has no parent, it
-    will appear as a free-floating window as we want.
-    """
-
-    # todo connect combo box with deck config settings - done todo - either add a save button to confirm changes to
-    #  configs or individually connect each lineedit, save button is likely to be a lot easier will have to change
-    #  the objects properties when line edits are changed, and then connect the save button to inserting and
-    #  commiting to the database configs now hold changes but need to add a save button do confirm changing config
-    #  for the deck and update all changes made to the configs - add a save method to the config class
 
     def __init__(self, user, deck=None):
         super().__init__()
@@ -1786,10 +1914,10 @@ class DeckOptions(QWidget):
         cur.execute(f"""DELETE FROM configs where id = {self.current_config.id}""")
         self.configscombobox.setCurrentIndex(tempidx)
         self.configscombobox.removeItem(delidx)
-        print(len(self.configs))
+        # print(len(self.configs))
         del self.configs[delidx]
-        print(len(self.configs))
-        print("deleting")
+        # print(len(self.configs))
+        # print("deleting")
         con.commit()
         cur.close()
         con.close()
@@ -1819,8 +1947,7 @@ class CardsMain(QMainWindow):
         self.filterMenu = QMenu()
 
         self.filterWholeCollection = QAction("Whole Collection", self.filtertool)
-        self.filterCurrentDeck = QAction("Current Deck", self.filtertool)
-        self.filterStudiedLast = QMenu("Studied in the last", self.filterMenu)
+        self.filterLastStudied = QMenu("Studied", self.filterMenu)
         self.filterStatus = QMenu("Status", self.filterMenu)
 
         self.statusNew = QAction("New", self.filterStatus)
@@ -1828,15 +1955,30 @@ class CardsMain(QMainWindow):
         self.statusReview = QAction("Review", self.filterStatus)
         self.statusRelearning = QAction("Relearning", self.filterStatus)
 
+        self.studiedToday = QAction("Today", self.filterLastStudied)
+        self.studiedLastWeek = QAction("In the last week", self.filterLastStudied)
+        self.studiedLastMonth = QAction("In the last month", self.filterLastStudied)
+        self.studiedLastYear = QAction("In the last year", self.filterLastStudied)
+
+        self.filterLastStudied.addActions(
+            [self.studiedToday, self.studiedLastWeek, self.studiedLastMonth, self.studiedLastYear])
+
         self.statusNew.triggered.connect(lambda: self.filterstatusfunc(self.statusNew.text()))
         self.statusLearning.triggered.connect(lambda: self.filterstatusfunc(self.statusLearning.text()))
         self.statusReview.triggered.connect(lambda: self.filterstatusfunc(self.statusReview.text()))
         self.statusRelearning.triggered.connect(lambda: self.filterstatusfunc(self.statusRelearning.text()))
 
-        self.filterStatus.addActions([self.statusNew, self.statusLearning, self.statusReview, self.statusRelearning])
-        self.filterMenu.addActions([self.filterWholeCollection, self.filterCurrentDeck])
+        self.studiedToday.triggered.connect(lambda: self.filterlaststudiedfunc(0))
+        self.studiedLastWeek.triggered.connect(lambda: self.filterlaststudiedfunc(7))
+        self.studiedLastMonth.triggered.connect(lambda: self.filterlaststudiedfunc(30))
+        self.studiedLastYear.triggered.connect(lambda: self.filterlaststudiedfunc(365))
 
-        self.filterMenu.addMenu(self.filterStudiedLast)
+        self.filterWholeCollection.triggered.connect(self._filterwholecollection)
+
+        self.filterStatus.addActions([self.statusNew, self.statusLearning, self.statusReview, self.statusRelearning])
+        self.filterMenu.addAction(self.filterWholeCollection)
+
+        self.filterMenu.addMenu(self.filterLastStudied)
         self.filterMenu.addMenu(self.filterStatus)
 
         self.filtertool.setMenu(self.filterMenu)
@@ -1855,6 +1997,9 @@ class CardsMain(QMainWindow):
         self.cardstree.setIndentation(0)
 
         self.cardstree.selectionModel().selectionChanged.connect(lambda: self.editcard(self.cardstree.currentIndex()))
+
+        self.cardstree.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.cardstree.customContextMenuRequested.connect(self.cardsmenu)
 
         # constructing decks list
         self.deckslistmodel = QStandardItemModel(0, 1, self.deckslist)
@@ -1878,46 +2023,88 @@ class CardsMain(QMainWindow):
         q = QTreeView()
         q.currentIndex()
         self.filldeckslist()
-        self.search(refresh=True)
+        self.search()
+        self.alertlabel.setText("")
         # beware of issues here down the line with refresh
 
-    def filterstatusfunc(self, status):
-        self.filterinput.setText(f"Status: {status}")
+    def filterlaststudiedfunc(self, days):
+        self.filterinput.setText(f"studied:{days}")
         self.search()
 
-    def search(self, refresh=False):
+    def filterstatusfunc(self, status):
+        self.filterinput.setText(f"status:{status.lower()}")
+        self.search()
+
+    def _filterwholecollection(self):
+        self.filterinput.setText("")
+        self.search()
+
+    def search(self):
         fetch = self.fetch_cards()
-        self.fillcards(fetch, refresh)
+        self.fillcards(fetch)
 
     def fetch_cards(self):
-        # todo - change this function so it only displays cards in active decks, or has an option to NOTE: this might
-        #  cause issues when changing windows with the clause to retain edits so might be easier just to reset the
-        #  selection
-        filterText = self.filterinput.text()
+        # todo - change this function so it only displays cards in active decks (ie with a user_deck field),
+        #  or has an option to NOTE: this might cause issues when changing windows with the clause to
+        #  retain edits so might be easier just to reset the selection
+        filtertext = self.filterinput.text()
+
+        """
+        can have:
+        status:{new, learning, etc}
+        studied:x
+        deck:abc
+        """
         # regex expressions
         # should have filters of:
         # status, time when last reviewed, last ease in review, reps, lapses, interval,
+        # studied in the last week/month/year
         # maybe allow for searching of other user's cards in library but not editing
         # todo might need to save and retain the current sort state of the table when updating
-        # todo current issue where selecting a card, searching, then editing does not update the displayed item text
-        """
-        "deck:([^":]+\s?)*"$ - for "deck:abc"
-        deck:current - self explanatory
 
-        """
+        con = sqlite3.connect(database)
+        cur = con.cursor()
+        con.create_function("REGEXP", 2, regexp)
+
+        expression = r"^(status|deck):[a-zA-Z]+|(studied):\d+$"
+        match = re.search(expression, filtertext)
+        if match:
+            if "status:" in match.group(0):
+                statusints = {"new": 0, "learning": 1, "review": 2, "relearning": 3}
+                status = match.group(0)[7:]
+                if status in statusints:
+                    cur.execute("""SELECT uc.id, d.name FROM user_cards uc INNER JOIN cards c ON uc.cid = c.id
+                             INNER JOIN decks d ON c.deck_id = d.id 
+                             WHERE uc.uid = ?
+                             AND uc.status = ?""", (self.user.id, statusints[status]))
+            elif "deck:" in match.group(0):
+                deckname = match.group(0)[5:]
+                cur.execute("""SELECT uc.id, d.name FROM user_cards uc INNER JOIN cards c ON uc.cid = c.id
+                         INNER JOIN decks d ON c.deck_id = d.id 
+                         WHERE uc.uid = ? AND d.name REGEXP ? """, (self.user.id, deckname))
+            elif "studied:" in match.group(0):
+                days = int(match.group(0)[8:])
+                today = datetime.date.today()
+                timestamp = int(mktime(today.timetuple()))
+                cutoff = timestamp - (86400 * days)
+                cur.execute("""SELECT DISTINCT uc.id, d.name FROM user_cards uc INNER JOIN cards c ON uc.cid = c.id
+                         INNER JOIN decks d ON c.deck_id = d.id 
+                         INNER JOIN revlog r ON r.ucid = uc.id
+                         WHERE r.time >= ?
+                         AND uc.uid = ? """, (cutoff, self.user.id))
+        else:
+            cur.execute("""SELECT uc.id, d.name FROM user_cards uc INNER JOIN cards c ON uc.cid = c.id
+                     INNER JOIN decks d ON c.deck_id = d.id
+                     WHERE uc.uid = ? AND c.data REGEXP ?""", (self.user.id, filtertext))
+            # cur.execute("""SELECT uc.id, d.name FROM user_cards uc INNER JOIN cards c ON uc.cid = c.id
+            #          INNER JOIN decks d ON c.deck_id = d.id
+            #          WHERE uc.uid = ?""", (self.user.id,))
 
         # check if falls under predifined filter formats, else iterate through card data to see if it contains a
         # regex match
 
-        # todo also should rewrite this later so if the card is from someone else's deck it can't be edited,
-        #  and user_cards which aren't connected to a user_deck pair shouldn't be shown, but can still be stored.
-
-        con = sqlite3.connect(database)
-        cur = con.cursor()
-
-        cur.execute("""SELECT uc.id, d.name FROM user_cards uc INNER JOIN cards c ON uc.cid = c.id
-         INNER JOIN decks d ON c.deck_id = d.id 
-         WHERE uc.uid = ? """, (self.user.id,))
+        # consider whether user_cards which aren't connected to a user_deck pair shouldn't be shown, but can still be
+        # stored
 
         fetch = [(row[0], row[1]) for row in cur.fetchall()]
         cur.close()
@@ -1925,7 +2112,7 @@ class CardsMain(QMainWindow):
 
         return fetch
 
-    def fillcards(self, fetch, refresh):
+    def fillcards(self, fetch):
         # need to sort out card types
 
         self.rootNode.removeRows(0, self.rootNode.rowCount())
@@ -1939,10 +2126,6 @@ class CardsMain(QMainWindow):
                 due = ''
 
             self.rootNode.appendRow([card, QStandardItem(), QStandardItem(due), QStandardItem(deckname)])
-            # if card == self.editingcard:
-            #     i = self.rootNode.rowCount()
-        #
-        # return i
 
     def editcard(self, idx):
         if idx.row() == -1:  # prevents crashing if search is used whilst a card is selected
@@ -1955,7 +2138,7 @@ class CardsMain(QMainWindow):
             editable = True
 
         for i in reversed(range(self.scrollWidgetContents_layout.count())):
-            self.scrollWidgetContents_layout.itemAt(i).widget().deleteLater()
+            self.scrollWidgetContents_layout.takeAt(i).widget().deleteLater()  # was using itemAt() which was wrong
 
         self.line_edits = []
         font = QFont()
@@ -2014,8 +2197,203 @@ class CardsMain(QMainWindow):
 
     def filterondeck(self, idx):
         deck = self.deckslistmodel.item(idx.row(), 0)
-        self.filterinput.setText(f'"deck:{deck.name}"')
+        self.filterinput.setText(f'deck:{deck.name}')
         self.search()
+
+    def cardsmenu(self, position):
+        menu = QMenu()
+        changedeck = QAction(self.tr("Change Deck"), menu)
+        changedeck.triggered.connect(self.changedeck)
+        # won't allow moving cards from public decks
+        changedue = QAction(self.tr("Change Due Date"), menu)
+        changedue.triggered.connect(self.changedue)
+        forget = QAction(self.tr("Forget"), menu)
+        forget.triggered.connect(self.forget)
+        delete = QAction(self.tr("Delete"), menu)
+        delete.triggered.connect(self.delete)
+        menu.addActions([changedeck, changedue, forget, delete])
+        menu.exec_(self.cardstree.viewport().mapToGlobal(position))
+
+    def changedeck(self):
+        # could allow selection of multiple cards
+        card = self.cardstree.model().item(self.cardstree.currentIndex().row())
+        con = sqlite3.connect(database)
+        cur = con.cursor()
+        cur.execute("""SELECT isPublic FROM decks WHERE id = ?""", (card.deck_id,))
+        public = cur.fetchone()[0]
+        if card.creator_id != self.user.id and public:
+            # todo - maybe change this to a dialog box
+            self.alertlabel.setText("This card is part of a public deck and cannot be moved")
+        else:
+            self.movewindow = MoveCard(self.user)
+            self.movewindow.movebutton.clicked.connect(lambda: self.move(card))
+            self.movewindow.exec()
+
+    def move(self, card):
+        deck = self.movewindow.decksmodel.item(self.movewindow.deckslist.currentIndex().row(), 0)
+        if not deck:
+            return
+        card.deck_id = deck.did
+        card.update(self.user.id)
+        self.movewindow.deleteLater()
+        self.refresh()
+
+    def changedue(self):
+        card = self.cardstree.model().item(self.cardstree.currentIndex().row())
+        self.reschedulewindow = RescheduleWindow()
+        self.reschedulewindow.buttonBox.accepted.connect(lambda: self.reschedule(card))
+        self.reschedulewindow.exec()
+
+    def reschedule(self, card):
+        pattern = r"\d+(?:-\d+)?(?:!)?"
+        # this regex pattern matches to x-y!, x-y, x!, or x [with x,y being integers]
+        string = self.reschedulewindow.lineedit.text()
+        match = re.search(pattern, string)
+
+        if not match:
+            self.alertlabel.setText("Please enter numbers in a valid format")
+            self.reschedulewindow.deleteLater()
+
+        con = sqlite3.connect(database)
+        cur = con.cursor()
+        match = match.group(0)
+        if "-" in match and '!' in match:
+            # Handle the x-y! case
+            x, y = match.split("-")
+            y = y[:-1]
+            x, y = map(int, [x, y])
+            try:
+                days_ivl = random.randint(x, y)
+            except:
+                days_ivl = random.randint(y, x)
+            ivl = days_ivl * 86400
+            # max() ensures ivl isnt less than 1 day
+            cur.execute("""UPDATE user_cards SET status = ?, due = ?, ivl = ? WHERE id = ?""",
+                        (2, time() + ivl, max(ivl, 86400), card.id))
+            print("x-y!")
+        elif "-" in match:
+            # Handle the x-y case
+            x, y = map(int, match.split("-"))
+            try:
+                days_ivl = random.randint(x, y)
+            except:
+                days_ivl = random.randint(y, x)
+            ivl = days_ivl * 86400
+            cur.execute("""UPDATE user_cards SET status = ? due = ? WHERE id = ?""", (2, time() + ivl, card.id))
+            print("x-y")
+        elif "!" in match:
+            # Handle the x! case
+            x = int(match[:-1])
+            ivl = x * 86400
+            # max() ensures ivl isnt less than 1 day
+            cur.execute("""UPDATE user_cards SET status = ? due = ?, ivl = ? WHERE id = ?""",
+                        (2, time() + ivl, max(ivl, 86400), card.id))
+            print("x!")
+        else:
+            # Handle the x case
+            x = int(match)
+            ivl = x * 86400
+            cur.execute("""UPDATE user_cards SET status = ? due = ? WHERE id = ?""", (2, time() + ivl, card.id))
+
+        con.commit()
+        cur.close()
+        con.close()
+        self.reschedulewindow.deleteLater()
+        self.refresh()
+
+    def forget(self):
+        card = self.cardstree.model().item(self.cardstree.currentIndex().row())
+        self.forgetwindow = ForgetWindow()
+        self.forgetwindow.buttonBox.accepted.connect(lambda: self.confirmforget(card))
+        self.forgetwindow.exec()
+
+    def confirmforget(self, card):
+        con = sqlite3.connect(database)
+        cur = con.cursor()
+        if self.forgetwindow.resetcountscheck.isChecked():
+            cur.execute("""UPDATE user_cards SET 
+                        ef = ?,
+                        ivl = ?,
+                        status = ?,
+                        reps = ?,
+                        lapses = ?,
+                        due = ?,
+                        left = ?
+                        WHERE id = ?""", (None, None, 0, 0, 0, None, 0, card.id))
+        else:
+            cur.execute("""UPDATE user_cards SET 
+                        ef = ?,
+                        ivl = ?,
+                        status = ?,
+                        due = ?,
+                        left = ?
+                        WHERE id = ?""", (None, None, 0, None, 0, card.id))
+
+        con.commit()
+        cur.close()
+        con.close()
+        self.forgetwindow.deleteLater()
+
+    def delete(self):
+        card = self.cardstree.model().item(self.cardstree.currentIndex().row())
+        self.deletewindow = DeleteCard()
+        self.deletewindow.buttonBox.accepted.connect(lambda: self.confirmdelete(card))
+        self.deletewindow.exec()
+
+    def confirmdelete(self, card):
+        con = sqlite3.connect(database)
+        cur = con.cursor()
+        cur.execute("""DELETE FROM user_cards WHERE cid = ?""", (card.cid,))
+        cur.execute("""DELETE FROM cards WHERE id = ?""", (card.cid,))
+        con.commit()
+        cur.close()
+        con.close()
+        self.deletewindow.deleteLater()
+        self.refresh()
+
+
+class MoveCard(QDialog):
+    def __init__(self, user):
+        super().__init__()
+        loadUi("movecard.ui", self)
+        self.user = user
+        self.decksmodel = QStandardItemModel()
+        self.loaddecks()
+        self.cancelbutton.clicked.connect(self.deleteLater)
+
+    def loaddecks(self):
+        self.decksmodel.clear()
+        con = sqlite3.connect(database)
+        cur = con.cursor()
+        cur.execute("SELECT ud.id FROM user_decks ud INNER JOIN decks d ON ud.deck_id = d.id "
+                    "WHERE ud.uid = ? AND d.created_uid = ?", (self.user.id, self.user.id))
+        for fetch in cur.fetchall():
+            deck = Deck(fetch[0], self.user)
+            self.decksmodel.appendRow(deck)
+        cur.close()
+        con.close()
+        self.deckslist.setModel(self.decksmodel)
+
+
+class RescheduleWindow(QDialog):
+    def __init__(self):
+        super().__init__()
+        loadUi("reschedule.ui", self)
+        self.buttonBox.rejected.connect(self.deleteLater)
+
+
+class ForgetWindow(QDialog):
+    def __init__(self):
+        super().__init__()
+        loadUi("forgetwindow.ui", self)
+        self.buttonBox.rejected.connect(self.deleteLater)
+
+
+class DeleteCard(QDialog):
+    def __init__(self):
+        super().__init__()
+        loadUi("deletecard.ui", self)
+        self.buttonBox.rejected.connect(self.deleteLater)
 
 
 class AddCard(QMainWindow):
@@ -2133,7 +2511,8 @@ class AddCard(QMainWindow):
                         (card_data, deck.did, self.template.id, time(), self.user.id))
             cid = cur.fetchone()[0]
             cur.execute("""INSERT INTO user_cards (uid, cid, ivl, ef, type, status, reps, lapses, odue, left)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", (self.user.id, cid, None, deck.config.new_init_ef, 0, 0, 0, 0, time(), 0))
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (self.user.id, cid, None, deck.config.new_init_ef, 0, 0, 0, 0, time(), 0))
 
             try:
                 con.commit()
@@ -2153,7 +2532,6 @@ class AddCard(QMainWindow):
 
 
 class TemplatesWindow(QWidget):
-    # todo add counts to each template text showing how many cards use the template
     # also todo connect delete, when deleting dont allow basic to be deleted using min id fetch for the user!!
     def __init__(self, user, template):
         super().__init__()
@@ -2175,6 +2553,9 @@ class TemplatesWindow(QWidget):
         cur.execute("SELECT id FROM templates WHERE created_uid = ?", (self.user.id,))
         for fetch in cur.fetchall():
             template = Template(fetch[0])
+            cur.execute(f"""SELECT COUNT (id) FROM cards WHERE template_id = {template.id}""")
+            cardcount = cur.fetchone()[0]
+            template.setText(f"{template.name} [{cardcount} cards]")
             self.templatesmodel.appendRow(template)
             # if template.id == self.initialtemplate.id:
             #     print("here")
@@ -2219,8 +2600,9 @@ class TemplatesWindow(QWidget):
             addbasictemplate(self.user.id, cur)
         else:
             cur.execute("""INSERT INTO templates (fields, sortfield, modified, created_uid, front_format, back_format,
-             styling, name) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""", (template.fields, template.sortfield, time(), self.user.id,
-                                                              template.front, template.back, template.styling, name))
+             styling, name) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (template.fields, template.sortfield, time(), self.user.id,
+                         template.front, template.back, template.styling, name))
             # self.setWindowState(Qt.WindowActive)
         con.commit()
         cur.close()
@@ -2307,17 +2689,20 @@ class TemplatesWindow(QWidget):
                 print(instruction, params)
                 cur.execute(instruction, params)
 
-            # TODO handle these if... elif ... else execute as SQL
-            # todo here, allow fields to be added and deleted,
-            #  when this happens will want to update all cards that are connected to the template, and update the data of
-            #  any changed fields, if indexes change, will want to change the index of data, etc.
-            #  Delete -> Delete Data and field
-            #  Add -> Add field and empty data slot - Also need to check field name not in use
-            #  Reposition -> Change position/index of field and data
-            #  Rename -> Change field name
-            #  Sort by this field -> change sortfield, make sure this changes with the ui aswell
-            #  Should be sufficient (obviously cancel and save to discard/commit changes) - to cancel just call load
-            #  template again
+            """
+            CAN USE THIS IN WRITEUP
+            handle these if... elif ... else execute as SQL
+             here, allow fields to be added and deleted,
+             when this happens will want to update all cards that are connected to the template, and update the data of
+             any changed fields, if indexes change, will want to change the index of data, etc.
+             Delete -> Delete Data and field
+             Add -> Add field and empty data slot - Also need to check field name not in use
+             Reposition -> Change position/index of field and data
+             Rename -> Change field name
+             Sort by this field -> change sortfield, make sure this changes with the ui aswell
+             Should be sufficient (obviously cancel and save to discard/commit changes) - to cancel just call load
+             template again
+            """
 
         con.commit()
         cur.close()
@@ -2346,6 +2731,28 @@ class TemplatesWindow(QWidget):
         cur.close()
         con.close()
         self.layoutwindow.deleteLater()
+        self.loadtemplates()
+
+    def delete(self):
+        template = self.templatesmodel.item(self.templateslist.currentIndex().row(), 0)
+        if not template:
+            return
+
+        con = sqlite3.connect(database)
+        cur = con.cursor()
+        cur.execute("""SELECT MIN(id) FROM templates
+                            WHERE created_uid = ?""", (self.user.id,))
+        defaulttemplate = cur.fetchone()[0]
+
+        if template.id == defaulttemplate:
+            # todo dialog box to say default template can't be deleted
+            return
+
+        # trigger dialog box to show how many cards are affected
+        # connect ok button to confirm delete function
+
+        cur.close()
+        con.close()
         self.loadtemplates()
 
 
@@ -2493,7 +2900,6 @@ class LayoutWindow(QWidget):
                         back = re.sub(match, f"({match[2:-2]})", back)
 
             match = re.search(r"\{\{", back)
-            # print(f"bracketserror: {match}")
             if match:
                 missing_brackets_error = True
                 return field_error, missing_brackets_error, back
@@ -2509,8 +2915,6 @@ class NameWindow(QWidget):
 
 
 class TemplateFieldsWindow(QWidget):
-    # todo add delete functionality, add a prompt (alert box) on pressing delete notifying the user of how many cards
-    #  the deletion affects, (iterate through cards with the template to check if they have dat in that index)
     def __init__(self, template):
         super().__init__()
         loadUi("templatefields.ui", self)
@@ -2756,15 +3160,1221 @@ class AddTemplate(QWidget):
         con.close()
 
 
+# STATS WINDOWS Important - would add to complexity due to aggregate functions,
+# try to get this working asap
+# IDEAS:
+# statistics by deck and whole collection
+# - no of cards studied today, total time spent studying, avg time, counts for each difficulty and %
+# correct answers on mature cards (i.e. hard, good or easy on cards with previous intervals of > 21/30 days)
+# cards due in the future, plot by days ahead and no
+# [work out way to show historic reviews (number on each day)] - matplotlib imshow(z)? - low priority
+# ^ breakdown of these past reviews on whether cards were young, mature, learning, relearning, new etc.
+# [both time spent and no of reviews] ^
+# Pie chart breakdown of cards in the deck - done this, todo should add text and percentages
+# Plot of card intervals
+# bar chart of card ease factors
+# Success rate breakdown by hours over a given time frame
+# Answer buttons pressed for each card type - (re+)learning, young, mature
+# When cards were added? Not sure how this would be done or if it serves mutch purpose
+# also want session statistics maybe?
+# be open to any other ideas or suggestions
+
+
 class StatsPage(QMainWindow):
     def __init__(self, user):
+        self.statuscolours = ['#6BAED6', '#DF8C50', '#CF6A52', '#84C685', '#48A461']
+        self.answercolours = ['#8F0B29', '#D5A365', '#9DBE69', '#0B5E37']
+
         self.user = user
+        self.deck = None
         super().__init__()
         loadUi("statspage.ui", self)
         connectmainbuttons(self)
+        self.fetchcardsdata()
+        labelfont = QFont()
+        labelfont.setPointSize(18)
+
+        layout = QtWidgets.QVBoxLayout(self.scrollAreaWidgetContents)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setAlignment(Qt.AlignTop)
+
+        # to be moved
+
+        todaywidget = self.createtodaywidget()
+        layout.addWidget(todaywidget)
+
+        future = self.createfuturereviewsbar()
+        layout.addWidget(future)
+
+        pastreviews = self.createpastreviewsbar()
+        layout.addWidget(pastreviews)
+
+        piewidget = self.createstatuspie()
+        layout.addWidget(piewidget)
+
+        ivlswidget = self.createintervalsbar()
+        layout.addWidget(ivlswidget)
+
+        answerbar = self.createanswerbuttonsbar()
+        layout.addWidget(answerbar)
+        ###
+
+        layout.addSpacerItem(QSpacerItem(20, 0, QSizePolicy.Minimum, QSizePolicy.MinimumExpanding))
+        self.scrollarea.setWidget(self.scrollAreaWidgetContents)
+        self.scrollarea.setWidgetResizable(True)
+        self.scrollAreaWidgetContents.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.scrollAreaWidgetContents.setLayout(layout)
+
+        self.allcardsbutton.clicked.connect(self.allcardstoggled)
+        self.deckbutton.clicked.connect(self.deckbuttontoggled)
+        self.decksbox.currentIndexChanged.connect(self.changedeck)
+
+        self.refresh()
 
     def refresh(self):
+        self.allcardsbutton.setChecked(True)
+        self.filldecksbox()
+        self.decksbox.setEnabled(False)
+        self.deck = None
+        # call a refresh graphs
         pass
+
+    def allcardstoggled(self):
+        if not self.allcardsbutton.isChecked():
+            return
+        self.decksbox.setEnabled(False)
+        self.deck = None
+        # call a refresh graphs
+
+    def deckbuttontoggled(self):
+        if not self.deckbutton.isChecked():
+            return
+        self.decksbox.setEnabled(True)
+        self.deck = self.decksbox.currentData()
+        # call a refresh graphs
+
+    def refreshgraphs(self):
+        pass
+
+    def changedeck(self):
+        if not self.deckbutton.isChecked():
+            return
+        self.deck = self.decksbox.currentData()
+
+    def fetchcardsdata(self):
+        con = sqlite3.connect(database)
+        cur = con.cursor()
+        cur.execute(f"""SELECT r.ucid, r.ease, r.ivl, r.lastivl, r.ef, r.lastef,
+         r.status, r.reps, r.lapses, r.time, r.start, r.end
+         FROM revlog r INNER JOIN user_cards uc ON r.ucid = uc.id WHERE uc.uid = ?""", (self.user.id,))
+        self.revsdf = pd.DataFrame(cur.fetchall(),
+                                   columns=['ucid', 'ease', 'ivl', 'lastivl', 'ef', 'lastef',
+                                            'status', 'reps', 'lapses', 'time', 'start', 'end'])
+
+        cur.execute(f"""SELECT cid, ef, ivl, type, status, reps, lapses, due FROM user_cards WHERE uid = ?""",
+                    (self.user.id,))
+
+        self.cardsdf = pd.DataFrame(cur.fetchall(),
+                                    columns=['cid', 'ef', 'ivl', 'type', 'status', 'reps', 'lapses', 'due'])
+        self.cardsdf['due'] = pd.to_datetime(self.cardsdf['due'], unit='s', origin='unix')
+        self.cardsdf['due'] = self.cardsdf['due'].dt.date  # Rounds down due times to the nearest date
+        self.cardsdf['due'] = (self.cardsdf['due'] - datetime.date.today()).dt.days
+
+    def createstatuspie(self):
+        # ideally want to add this into a seperate widget then -> statspage
+        """counts: [new, learning, relearning, young, mature]"""
+        statuses = ['New', 'Learning', 'Relearning', 'Young', 'Mature']
+        con = sqlite3.connect(database)
+        cur = con.cursor()
+        counts = [0] * 5
+        if self.deck:
+            params = [(0, self.user.id, self.deck.id), (1, self.user.id, self.deck.id), (3, self.user.id, self.deck.id)]
+            for i in range(3):
+                cur.execute("""SELECT COUNT (id) FROM user_cards WHERE status = ? AND uid = ? AND deck_id = ?""",
+                            (params[i]))
+                counts[i] = cur.fetchone()[0]
+
+            cur.execute(
+                """SELECT COUNT (id) FROM user_cards WHERE status = ? AND uid = ? AND deck_id = ? AND ivl < ?""",
+                (2, self.user.id, self.deck.id, 30 * 86400))
+            counts[3] = cur.fetchone()[0]
+            cur.execute(
+                """SELECT COUNT (id) FROM user_cards WHERE status = ? AND uid = ? AND deck_id = ? AND ivl >= ?""",
+                (2, self.user.id, self.deck.id, 30 * 86400))
+            counts[4] = cur.fetchone()[0]
+        else:
+            params = [(0, self.user.id), (1, self.user.id), (3, self.user.id)]
+            for i in range(3):
+                cur.execute("""SELECT COUNT (id) FROM user_cards WHERE status = ? AND uid = ?""",
+                            (params[i]))
+                counts[i] = cur.fetchone()[0]
+
+            cur.execute(
+                """SELECT COUNT (id) FROM user_cards WHERE status = ? AND uid = ? AND ivl < ?""",
+                (2, self.user.id, 30 * 86400))
+            counts[3] = cur.fetchone()[0]
+            cur.execute(
+                """SELECT COUNT (id) FROM user_cards WHERE status = ? AND uid = ? AND ivl >= ?""",
+                (2, self.user.id, 30 * 86400))
+            counts[4] = cur.fetchone()[0]
+
+        cleaned_counts = []
+        cleaned_colours = []
+        cleaned_statuses = []
+        explode = []
+        explodefloat = 0
+        for i in range(5):
+            if counts[i] != 0:
+                cleaned_counts.append(counts[i])
+                cleaned_colours.append(self.statuscolours[i])
+                cleaned_statuses.append(statuses[i])
+                explode.append(explodefloat)
+
+        canvas = MplCanvas(self, width=4, height=4, dpi=100)
+        # labels=cleaned_statuses, autopct=lambda p: '{:.0f}'.format(p * sum(counts) / 100), pctdistance=0.85,
+        canvas.axes.pie(cleaned_counts, colors=cleaned_colours, explode=explode, startangle=90)
+        canvas.axes.set_facecolor('#363636')
+        canvas.fig.set_facecolor('#363636')
+
+        canvas.fig.subplots_adjust(left=-0.05, right=1.05, bottom=-0.05, top=1.05)
+
+        # center_circle = mpatches.Circle((0, 0), 0.7, color='#363636')
+        # canvas.axes.add_artist(center_circle)
+        canvas.setSizePolicy(QSizePolicy.MinimumExpanding, QSizePolicy.Minimum)
+
+        piewidget = GraphWidget()
+        piewidget.titlelabel.setText("Cards By Status")
+
+        subwidget = QWidget()
+        layout = QHBoxLayout()
+        subwidget.setLayout(layout)
+        layout.addWidget(canvas)
+
+        textwidget = QWidget()
+        textlayout = QGridLayout()
+        textwidget.setLayout(textlayout)
+
+        font = QFont()
+        font.setPointSize(15)
+
+        # statuses = ['New', 'Learning', 'Relearning', 'Young', 'Mature']
+
+        newlabel = QLabel("New")
+        newlabel.setStyleSheet(f"color:{self.statuscolours[0]}")
+        newlabel.setAlignment(Qt.AlignLeft)
+        newlabel.setFont(font)
+
+        newcount = QLabel(f"{counts[0]}")
+        newcount.setAlignment(Qt.AlignRight)
+        newcount.setFont(font)
+
+        learninglabel = QLabel("Learning")
+        learninglabel.setStyleSheet(f"color:{self.statuscolours[1]}")
+        learninglabel.setAlignment(Qt.AlignLeft)
+        learninglabel.setFont(font)
+
+        learningcount = QLabel(f"{counts[1]}")
+        learningcount.setAlignment(Qt.AlignRight)
+        learningcount.setFont(font)
+
+        relearninglabel = QLabel("Relearning")
+        relearninglabel.setStyleSheet(f"color:{self.statuscolours[2]}")
+        relearninglabel.setMinimumSize(140, 0)
+        relearninglabel.setAlignment(Qt.AlignLeft)
+        relearninglabel.setFont(font)
+
+        relearningcount = QLabel(f"{counts[2]}")
+        relearningcount.setAlignment(Qt.AlignRight)
+        relearningcount.setFont(font)
+
+        younglabel = QLabel("Young")
+        younglabel.setStyleSheet(f"color:{self.statuscolours[3]}")
+        younglabel.setAlignment(Qt.AlignLeft)
+        younglabel.setFont(font)
+
+        youngcount = QLabel(f"{counts[3]}")
+        youngcount.setAlignment(Qt.AlignRight)
+        youngcount.setFont(font)
+
+        maturelabel = QLabel("Mature")
+        maturelabel.setStyleSheet(f"color:{self.statuscolours[4]}")
+        maturelabel.setAlignment(Qt.AlignLeft)
+        maturelabel.setFont(font)
+
+        maturecount = QLabel(f"{counts[4]}")
+        maturecount.setAlignment(Qt.AlignRight)
+        maturecount.setFont(font)
+
+        totallabel = QLabel("Total")
+        totallabel.setAlignment(Qt.AlignLeft)
+        totallabel.setFont(font)
+
+        totalcount = QLabel(f"{sum(counts)}")
+        totalcount.setAlignment(Qt.AlignRight)
+        totalcount.setFont(font)
+
+        # calculate percentage of cards for each status
+        new_percentage = round(counts[0] / sum(counts) * 100, 1)
+        learning_percentage = round(counts[1] / sum(counts) * 100, 1)
+        relearning_percentage = round(counts[2] / sum(counts) * 100, 1)
+        young_percentage = round(counts[3] / sum(counts) * 100, 1)
+        mature_percentage = round(counts[4] / sum(counts) * 100, 1)
+
+        # create labels for each status with percentage counts
+        newpct = QLabel(f"({new_percentage}%)")
+        newpct.setAlignment(Qt.AlignRight)
+        newpct.setFont(font)
+
+        learningpct = QLabel(f"({learning_percentage}%)")
+        learningpct.setAlignment(Qt.AlignRight)
+        learningpct.setFont(font)
+
+        relearningpct = QLabel(f"({relearning_percentage}%)")
+        relearningpct.setAlignment(Qt.AlignRight)
+        relearningpct.setFont(font)
+
+        youngpct = QLabel(f"({young_percentage}%)")
+        youngpct.setAlignment(Qt.AlignRight)
+        youngpct.setFont(font)
+
+        maturepct = QLabel(f"({mature_percentage}%)")
+        maturepct.setAlignment(Qt.AlignRight)
+        maturepct.setFont(font)
+        maturepct.setMinimumSize(80, 0)
+
+        # textlayout.addSpacerItem(QSpacerItem(20, 0, QSizePolicy.Minimum, QSizePolicy.Expanding), 0, 0)
+        textlayout.addWidget(newlabel, 1, 0)
+        textlayout.addWidget(newcount, 1, 1)
+        textlayout.addWidget(newpct, 1, 2)
+        textlayout.addWidget(learninglabel, 2, 0)
+        textlayout.addWidget(learningcount, 2, 1)
+        textlayout.addWidget(learningpct, 2, 2)
+        textlayout.addWidget(relearninglabel, 3, 0)
+        textlayout.addWidget(relearningcount, 3, 1)
+        textlayout.addWidget(relearningpct, 3, 2)
+        textlayout.addWidget(younglabel, 4, 0)
+        textlayout.addWidget(youngcount, 4, 1)
+        textlayout.addWidget(youngpct, 4, 2)
+        textlayout.addWidget(maturelabel, 5, 0)
+        textlayout.addWidget(maturecount, 5, 1)
+        textlayout.addWidget(maturepct, 5, 2)
+        textlayout.addWidget(totallabel, 6, 0)
+        textlayout.addWidget(totalcount, 6, 1)
+
+        # textlayout.addSpacerItem(QSpacerItem(20, 0, QSizePolicy.Minimum, QSizePolicy.Expanding), 6, 0)
+
+        textlayout.setRowStretch(0, 1)
+        textlayout.setRowStretch(6, 1)
+        textlayout.setColumnStretch(3, 1)
+
+        layout.addWidget(textwidget)
+
+        piewidget.frame.layout().addWidget(subwidget)
+
+        # come back to here to add text stuff
+
+        return piewidget
+
+    def createtodaywidget(self):
+        todaywidget = TodayStatsWidget()
+        con = sqlite3.connect(database)
+        cur = con.cursor()
+        # self.deck = self.decksbox.currentData()
+        # print(self.deck.name)
+        if self.deck:
+            cur.execute(f"""SELECT COUNT (r.id) FROM revlog r
+            INNER JOIN user_cards uc ON r.ucid = uc.id
+            INNER JOIN cards c on uc.cid = c.id
+            WHERE uc.uid = ? 
+            AND c.deck_id = ? 
+            AND (r.time >= {math.floor(time() / 86400) * 86400}
+            AND r.time <= {math.ceil(time() / 86400) * 86400})""",
+                        (self.user.id, self.deck.did))
+            totalcount = cur.fetchone()[0]
+
+            cur.execute(f"""SELECT SUM (r.start), SUM (r.end) FROM revlog r
+            INNER JOIN user_cards uc ON r.ucid = uc.id
+            INNER JOIN cards c on uc.cid = c.id
+            WHERE uc.uid = ? 
+            AND c.deck_id = ? 
+            AND (r.time >= {math.floor(time() / 86400) * 86400}
+            AND r.time <= {math.ceil(time() / 86400) * 86400})""",
+                        (self.user.id, self.deck.did))
+            times = cur.fetchone()
+
+            try:
+                totaltime = times[1] - times[0]
+            except:
+                totaltime = 0
+
+            cur.execute(f"""SELECT COUNT (r.id) FROM revlog r
+                        INNER JOIN user_cards uc ON r.ucid = uc.id
+                        INNER JOIN cards c on uc.cid = c.id
+                        WHERE uc.uid = ? 
+                        AND c.deck_id = ?
+                        AND r.ease = 0
+                        AND (r.time >= {math.floor(time() / 86400) * 86400}
+                        AND r.time <= {math.ceil(time() / 86400) * 86400})""",
+                        (self.user.id, self.deck.did))
+
+            againcount = cur.fetchone()[0]
+
+            newcount = self.statuscount(0, cur)
+            learncount = self.statuscount(1, cur)
+            reviewcount = self.statuscount(2, cur)
+            relearncount = self.statuscount(3, cur)
+
+            cur.execute(f"""SELECT COUNT (r.id) FROM revlog r
+                            INNER JOIN user_cards uc ON r.ucid = uc.id
+                            INNER JOIN cards c on uc.cid = c.id
+                            WHERE uc.uid = ? 
+                            AND c.deck_id = ?
+                            AND r.status = 2
+                            AND r.lastivl >= {86400 * 30}
+                            AND (r.time >= {math.floor(time() / 86400) * 86400}
+                            AND r.time <= {math.ceil(time() / 86400) * 86400})""",
+                        (self.user.id, self.deck.did))
+
+            totalmaturecount = cur.fetchone()[0]
+
+            cur.execute(f"""SELECT COUNT (r.id) FROM revlog r
+                            INNER JOIN user_cards uc ON r.ucid = uc.id
+                            INNER JOIN cards c on uc.cid = c.id
+                            WHERE uc.uid = ? 
+                            AND c.deck_id = ?
+                            AND r.lastivl >= {86400 * 30}
+                            AND r.status = 2
+                            AND (r.ease = 1 OR r.ease = 2 OR r.ease = 3)
+                            AND (r.time >= {math.floor(time() / 86400) * 86400}
+                            AND r.time <= {math.ceil(time() / 86400) * 86400})""",
+                        (self.user.id, self.deck.did))
+
+            correctmaturecount = cur.fetchone()[0]
+
+        else:
+            cur.execute(f"""SELECT COUNT (r.id) FROM revlog r
+            INNER JOIN user_cards uc ON r.ucid = uc.id
+            WHERE uc.uid = ? 
+            AND (r.time >= {math.floor(time() / 86400) * 86400}
+            AND r.time <= {math.ceil(time() / 86400) * 86400})""",
+                        (self.user.id,))
+            totalcount = cur.fetchone()[0]
+
+            cur.execute(f"""SELECT SUM (r.start), SUM (r.end) FROM revlog r
+            INNER JOIN user_cards uc ON r.ucid = uc.id
+            WHERE uc.uid = ? 
+            AND (r.time >= {math.floor(time() / 86400) * 86400}
+            AND r.time <= {math.ceil(time() / 86400) * 86400})""",
+                        (self.user.id,))
+            times = cur.fetchone()
+            try:
+                totaltime = times[1] - times[0]
+            except:
+                totaltime = 0
+
+            cur.execute(f"""SELECT COUNT (r.id) FROM revlog r
+                        INNER JOIN user_cards uc ON r.ucid = uc.id
+                        WHERE uc.uid = ? 
+                        AND r.ease = 0
+                        AND (r.time >= {math.floor(time() / 86400) * 86400}
+                        AND r.time <= {math.ceil(time() / 86400) * 86400})""",
+                        (self.user.id,))
+
+            againcount = cur.fetchone()[0]
+
+            newcount = self.statuscount(0, cur)
+            learncount = self.statuscount(1, cur)
+            reviewcount = self.statuscount(2, cur)
+            relearncount = self.statuscount(3, cur)
+
+            cur.execute(f"""SELECT COUNT (r.id) FROM revlog r
+                            INNER JOIN user_cards uc ON r.ucid = uc.id
+                            WHERE uc.uid = ? 
+                            AND r.lastivl >= {86400 * 30}
+                            AND r.status = 2
+                            AND (r.time >= {math.floor(time() / 86400) * 86400}
+                            AND r.time <= {math.ceil(time() / 86400) * 86400})""",
+                        (self.user.id,))
+
+            totalmaturecount = cur.fetchone()[0]
+
+            cur.execute(f"""SELECT COUNT (r.id) FROM revlog r
+                            INNER JOIN user_cards uc ON r.ucid = uc.id
+                            WHERE uc.uid = ? 
+                            AND r.lastivl >= {86400 * 30}
+                            AND r.status = 2
+                            AND (r.ease = 1 OR r.ease = 2 OR r.ease = 3)
+                            AND (r.time >= {math.floor(time() / 86400) * 86400}
+                            AND r.time <= {math.ceil(time() / 86400) * 86400})""",
+                        (self.user.id,))
+
+            correctmaturecount = cur.fetchone()[0]
+
+        if totalcount == 0:
+            todaywidget.overallcardsstudied.setText("No cards have been studied today")
+            todaywidget.againcountlabel.setText("")
+            todaywidget.breakdownlabel.setText("")
+            todaywidget.maturecardslabel.setText("")
+
+        else:
+            # todo, format times here better, i.e. minutes for total time if > 60 etc.
+            todaywidget.overallcardsstudied.setText(
+                f"""Studied {totalcount} cards in {round(totaltime, 1)} seconds ({round(totaltime / totalcount, 1)}s/card)""")
+            todaywidget.againcountlabel.setText(
+                f"""Again count: {againcount} ({'{:,.1%}'.format((totalcount - againcount) / totalcount)} correct)""")
+            todaywidget.breakdownlabel.setText(
+                f"""Learn: {learncount}, Review {reviewcount}, Relearn: {relearncount}, New: {newcount}""")
+            if totalmaturecount:
+                todaywidget.maturecardslabel.setText(
+                    f"""Correct answers on mature cards: {correctmaturecount}/{totalmaturecount} ({'{:,.1%}'.format(correctmaturecount / totalmaturecount)})""")
+            else:
+                todaywidget.maturecardslabel.setText(f"""No mature cards have been studied today""")
+
+        return todaywidget
+
+    def statuscount(self, status, cur):
+        if self.deck:
+            cur.execute(f"""SELECT COUNT (r.id) FROM revlog r
+                        INNER JOIN user_cards uc ON r.ucid = uc.id
+                        INNER JOIN cards c on uc.cid = c.id
+                        WHERE uc.uid = ? 
+                        AND c.deck_id = ?
+                        AND r.status = ?
+                        AND (r.time >= {math.floor(time() / 86400) * 86400}
+                        AND r.time <= {math.ceil(time() / 86400) * 86400})""",
+                        (self.user.id, self.deck.did, status))
+        else:
+            cur.execute(f"""SELECT COUNT (r.id) FROM revlog r
+                            INNER JOIN user_cards uc ON r.ucid = uc.id
+                            WHERE uc.uid = ? 
+                            AND r.status = ?
+                            AND (r.time >= {math.floor(time() / 86400) * 86400}
+                            AND r.time <= {math.ceil(time() / 86400) * 86400})""",
+                        (self.user.id, status))
+
+        return cur.fetchone()[0]
+
+    def filldecksbox(self):
+        self.decksbox.clear()
+        con = sqlite3.connect(database)
+        cur = con.cursor()
+        cur.execute("""SELECT ud.id FROM user_decks ud WHERE ud.uid = ?""", (self.user.id,))
+        try:
+            udids = cur.fetchall()
+        except:
+            udids = []
+            print("no decks exist")
+
+        for udid in udids:
+            deck = Deck(udid[0], self.user)
+            self.decksbox.addItem(deck.name, deck)
+
+    def createpastreviewsbar(self):
+        daysrange = 30
+        # get day range
+
+        today = datetime.date.today()
+        todaytimestamp = int(mktime(today.timetuple()))
+        daystarts = [todaytimestamp]
+        days_x = [0]
+        for i in range(daysrange):
+            daystart = todaytimestamp - (i + 1) * 86400
+            daystarts.append(daystart)
+            days_x.append(-(i + 1))
+        daystarts.reverse()
+        days_x.reverse()
+
+        con = sqlite3.connect(database)
+        cur = con.cursor()
+
+        mature = []
+        young = []
+        learning = []
+        relearning = []
+        new = []
+
+        for daystart in daystarts:
+            if self.deck:
+                cur.execute("""SELECT r.status, r.lastivl FROM revlog r 
+                            INNER JOIN user_cards uc ON r.ucid = uc.id
+                            INNER JOIN cards c ON uc.cid = c.id
+                            INNER JOIN decks d ON c.deck_id = d.id
+                            WHERE r.time >= ? 
+                            AND r.time < ? 
+                            AND uc.uid = ?
+                            AND d.id = ?""", (daystart, daystart + 86400, self.user.id, self.deck.did))
+            else:
+                cur.execute("""SELECT r.status, r.lastivl FROM revlog r 
+                            INNER JOIN user_cards uc ON r.ucid = uc.id
+                            WHERE r.time >= ? 
+                            AND r.time < ? 
+                            AND uc.uid = ?""", (daystart, daystart + 86400, self.user.id))
+
+            reviews = cur.fetchall()
+            maturecount = youngcount = learningcount = relearningcount = newcount = 0
+            try:
+                statuses, lastivls = zip(*reviews)
+                for i in range(len(statuses)):
+                    if statuses[i] == 0:
+                        newcount += 1
+                    elif statuses[i] == 1:
+                        learningcount += 1
+                    elif statuses[i] == 2:
+                        if lastivls[i] >= 30 * 86400:
+                            maturecount += 1
+                        else:
+                            youngcount += 1
+                    elif statuses[i] == 3:
+                        relearningcount += 1
+                    else:
+                        assert 0
+            except ValueError:
+                # no reviews for this day
+                pass
+
+            mature.append(maturecount)
+            young.append(youngcount)
+            learning.append(learningcount)
+            relearning.append(relearningcount)
+            new.append(newcount)
+
+        cur.close()
+        con.close()
+
+        revsum = np.array([sum(i) for i in zip(mature, young, relearning, learning, new)])
+        cumulative = np.cumsum(revsum)
+
+        canvas = MplCanvas(self, width=5, height=4, dpi=100)
+
+        # Plot the bars for each pair of values
+
+        canvas.axes.bar(days_x, mature, color=self.statuscolours[4], label='Mature')
+        canvas.axes.bar(days_x, young, color=self.statuscolours[3], bottom=mature, label='Young')
+        canvas.axes.bar(days_x, relearning, color=self.statuscolours[2],
+                        bottom=[i + j for i, j in zip(young, mature)], label='relearning')
+        canvas.axes.bar(days_x, learning, color=self.statuscolours[1],
+                        bottom=[i + j + k for i, j, k in zip(young, mature, relearning)], label='learning')
+        canvas.axes.bar(days_x, new, color=self.statuscolours[0],
+                        bottom=[i + j + k + l for i, j, k, l in zip(young, mature, relearning, learning)], label='new')
+
+        ax2 = canvas.axes.twinx()
+        ax2.plot(days_x, cumulative, c='#646464', lw=0.2)  # work out ways to display this better
+        ax2.fill_between(days_x, cumulative, 0, alpha=0.1, color='#8C8C8C')
+
+        ax2.set_ylim(bottom=0)
+        canvas.axes.set_xlim(right=0.5, left=days_x[0]-0.5)
+
+        ax3 = canvas.axes.twinx()
+
+        ax3.bar(days_x, max(revsum), color='white', alpha=0)
+        ax3.get_yaxis().set_ticks([])
+
+        canvas.axes.spines[['top']].set_visible(False)
+        ax2.spines[['top', 'bottom', 'left', 'right']].set_visible(False)
+        ax3.spines[['top', 'left', 'bottom', 'right']].set_visible(False)
+
+        canvas.axes.spines[['left', 'bottom', 'right']].set_color('#8C8C8C')
+
+        canvas.axes.tick_params(colors='#8C8C8C')
+        ax2.tick_params(colors='#8C8C8C')
+        ax3.tick_params(colors='#8C8C8C')
+
+        cursor = mplcursors.cursor(ax3, hover=mplcursors.HoverMode.Transient)
+
+        @cursor.connect("add")
+        def on_add(sel):
+            sel.annotation.get_bbox_patch().set(fc="white")
+            sel.annotation.arrow_patch.set(arrowstyle="simple", fc="white", alpha=0)
+            sel.annotation.set_fontsize(9)
+            index = sel.target.index
+            mature_val = mature[index]
+            young_val = young[index]
+            relearning_val = relearning[index]
+            learning_val = learning[index]
+            new_val = new[index]
+            running_val = cumulative[index]
+            days_ago = - days_x[index]  # assumes the plot shows the last 7 days
+            sel.annotation.set_text(
+                f"Days ago: {days_ago}\nMature: {mature_val}\nYoung: {young_val}\nRelearning: {relearning_val}\nLearning: {learning_val}\nNew: {new_val}\nRunning Total: {running_val}")
+            x, y, width, height = sel.artist[sel.target.index].get_bbox().bounds
+            sel.annotation.xy = (x + width / 2, y + height)
+            sel.artist[sel.target.index].set_alpha(0.1)
+
+        @cursor.connect("remove")
+        def on_remove(sel):
+            sel.artist[sel.target.index].set_alpha(0)
+            for sel in cursor.selections:
+                sel.artist[sel.target.index].set_alpha(0.1)
+
+        # Add a legend
+        # canvas.axes.legend()
+
+        canvas.axes.set_facecolor('#363636')
+        canvas.fig.set_facecolor('#363636')
+
+        canvas.setSizePolicy(QSizePolicy.MinimumExpanding, QSizePolicy.Minimum)
+
+        reviewswidget = GraphWidget()
+        reviewswidget.titlelabel.setText("Past Reviews")
+        reviewswidget.frame.layout().addWidget(canvas)
+        font = QFont()
+        font.setPointSize(15)
+        # adding stats for days studied, total reviews, avg for days studied, avg over period.
+        textwidget = QWidget()
+        textlayout = QGridLayout()
+        textwidget.setLayout(textlayout)
+
+        daysstudied = np.count_nonzero(revsum)
+        daysstudiedlabel = QLabel("Days Studied:")
+        daysstudiedlabel.setAlignment(Qt.AlignRight)
+        daysstudiedlabel.setFont(font)
+
+        daysstudiedstat = QLabel(f"{daysstudied} of {daysrange + 1} ({'{:,.0%}'.format(daysstudied / (daysrange + 1))})")
+        daysstudiedstat.setAlignment(Qt.AlignLeft)
+        daysstudiedstat.setFont(font)
+
+        totalreviewslabel = QLabel("Total:")
+        totalreviewslabel.setAlignment(Qt.AlignRight)
+        totalreviewslabel.setFont(font)
+
+        totalreviewsstat = QLabel(f"{sum(revsum)} reviews")
+        totalreviewsstat.setAlignment(Qt.AlignLeft)
+        totalreviewsstat.setFont(font)
+
+        avgdaysstudiedlabel = QLabel("Average for days studied:")
+        avgdaysstudiedlabel.setAlignment(Qt.AlignRight)
+        avgdaysstudiedlabel.setFont(font)
+
+        avgdaysstudiedstat = QLabel(f"{int(round(sum(revsum)/daysstudied, 0))} reviews/day")
+        avgdaysstudiedstat.setAlignment(Qt.AlignLeft)
+        avgdaysstudiedstat.setFont(font)
+
+        avgperiodlabel = QLabel("Average over period:")
+        avgperiodlabel.setAlignment(Qt.AlignRight)
+        avgperiodlabel.setFont(font)
+
+        avgperiodstat = QLabel(f"{int(round(sum(revsum)/(daysrange + 1), 0))} reviews/day")
+        avgperiodstat.setAlignment(Qt.AlignLeft)
+        avgperiodstat.setFont(font)
+
+        textlayout.addWidget(daysstudiedlabel, 0, 0)
+        textlayout.addWidget(daysstudiedstat, 0, 1)
+        textlayout.addWidget(totalreviewslabel, 1, 0)
+        textlayout.addWidget(totalreviewsstat, 1, 1)
+        textlayout.addWidget(avgdaysstudiedlabel, 2, 0)
+        textlayout.addWidget(avgdaysstudiedstat, 2, 1)
+        textlayout.addWidget(avgperiodlabel, 3, 0)
+        textlayout.addWidget(avgperiodstat, 3, 1)
+
+        reviewswidget.frame.layout().addWidget(textwidget)
+
+        # todo - will need to create widget outside of the scope of this function in order to use time frame buttons,
+        #  and just regenerate graph/text
+
+        return reviewswidget
+
+    def createfuturereviewsbar(self):
+        daysrange = 30
+        today = datetime.date.today()
+        todayend = int(mktime(today.timetuple())) + 86400
+
+        con = sqlite3.connect(database)
+        cur = con.cursor()
+
+        if self.deck:
+            if daysrange:
+                cur.execute(f"""SELECT uc.id, uc.due FROM user_cards uc
+                INNER JOIN cards c ON uc.cid = c.id
+                INNER JOIN decks d on c.deck_id = d.id
+                WHERE uc.uid = ?
+                AND deck.id = ?
+                AND uc.due <= ?""",
+                            (self.user.id, self.deck.did, todayend + daysrange * 86400))
+            else:
+                cur.execute(f"""SELECT uc.id, uc.due FROM user_cards uc
+                                INNER JOIN cards c ON uc.cid = c.id
+                                INNER JOIN decks d on c.deck_id = d.id
+                                WHERE uc.uid = ?
+                                AND deck.id = ?""",
+                            (self.user.id, self.deck.did))
+
+        else:
+            if daysrange:
+                cur.execute(f"""SELECT uc.id, uc.due FROM user_cards uc
+                                INNER JOIN cards c ON uc.cid = c.id
+                                INNER JOIN decks d on c.deck_id = d.id
+                                WHERE uc.uid = ?
+                                AND uc.due <= ?""",
+                            (self.user.id, todayend + daysrange * 86400))
+            else:
+                cur.execute(f"""SELECT uc.id, uc.due FROM user_cards uc
+                                            INNER JOIN cards c ON uc.cid = c.id
+                                            INNER JOIN decks d on c.deck_id = d.id
+                                            WHERE uc.uid = ?""",
+                            (self.user.id,))
+
+        duesdf = pd.DataFrame(cur.fetchall(), columns=['id', 'due'])
+
+        cur.close()
+        con.close()
+
+        duesdf['due'] = pd.to_datetime(duesdf['due'], unit='s', origin='unix')
+        duesdf['due'] = duesdf['due'].dt.date  # Rounds down due times to the nearest date
+        duesdf['due'] = (duesdf['due'] - datetime.date.today()).dt.days
+
+        canvas = MplCanvas(self, width=5, height=4, dpi=100)
+        canvas.setSizePolicy(QSizePolicy.MinimumExpanding, QSizePolicy.Minimum)
+
+        due_counts = duesdf.groupby(['due']).size().reset_index(name='count')
+        for i in range(daysrange + 1):
+            count = due_counts.loc[due_counts['due'] == i]
+            if count.empty:
+                due_counts.loc[len(due_counts)] = [i, 0]
+        due_counts = due_counts[due_counts['due'] >= 0]
+        due_counts = due_counts.sort_values(by=['due']).reset_index(drop=True)
+
+        print(due_counts)
+
+        canvas.axes.bar(due_counts['due'], due_counts['count'], color=self.statuscolours[3], alpha=1)
+        canvas.axes.yaxis.set_major_locator(ticker.MaxNLocator(integer=True))
+        # canvas.axes.set_xlabel('Due')
+        ax2 = canvas.axes.twinx()
+
+        # cumsum_x = np.linspace(min(due_counts['due']), max(due_counts['due']), 200)
+        # plotcumsum = np.interp(cumsum_x, due_counts['due'], due_counts['count'].cumsum())
+        # todo work out how to smooth the cumulative sum curve
+
+        ax2.plot(due_counts['due'], due_counts['count'].cumsum(), c='#646464')
+        ax2.fill_between(due_counts['due'], due_counts['count'].cumsum(), 0, alpha=0.1, color='#8C8C8C')
+        ax2.set_ylim(0, max(due_counts['count'].cumsum()) + 0.5)
+        ax2.set_ylim(bottom=0)
+
+        if daysrange:
+            canvas.axes.set_xlim(right=daysrange + 0.5, left=-0.5)
+        else:
+            canvas.axes.set_xlim(right=max(due_counts['count'] + 0.5), left=-0.5)
+
+        ax3 = canvas.axes.twinx()
+        ax3.bar(range(daysrange + 1), max(due_counts['count']), color='white', alpha=0)
+        ax3.get_yaxis().set_ticks([])
+
+        canvas.axes.spines[['top']].set_visible(False)
+        ax2.spines[['top', 'bottom', 'left', 'right']].set_visible(False)
+        ax3.spines[['top', 'left', 'bottom', 'right']].set_visible(False)
+
+        canvas.axes.spines[['left', 'bottom', 'right']].set_color('#8C8C8C')
+
+        canvas.axes.tick_params(colors='#8C8C8C')
+        ax2.tick_params(colors='#8C8C8C')
+        ax3.tick_params(colors='#8C8C8C')
+
+        canvas.axes.set_facecolor('#363636')
+        canvas.fig.set_facecolor('#363636')
+
+        canvas.setSizePolicy(QSizePolicy.MinimumExpanding, QSizePolicy.Minimum)
+
+        cursor = mplcursors.cursor(ax3, hover=mplcursors.HoverMode.Transient)
+
+        @cursor.connect("add")
+        def on_add(sel):
+            sel.annotation.get_bbox_patch().set(fc="white")
+            sel.annotation.arrow_patch.set(arrowstyle="simple", fc="white", alpha=0)
+            sel.annotation.set_fontsize(9)
+            index = sel.target.index
+            days = due_counts.iloc[index]["due"]
+            if days == 0:
+                daystext = "Today"
+            elif days == 1:
+                daystext = "Tomorrow"
+            else:
+                daystext = f"In {days} days:"
+            count = due_counts.iloc[index]["count"]
+            if count == 1:
+                cardsdue = f"{count} card due"
+            else:
+                cardsdue = f"{count} cards due"
+            cumulative = due_counts['count'].cumsum()[index]
+
+            sel.annotation.set_text(f"{daystext}\n{cardsdue}\nRunning Total: {cumulative}")
+            x, y, width, height = sel.artist[sel.target.index].get_bbox().bounds
+            sel.annotation.xy = (x + width / 2, y + height)
+            sel.artist[sel.target.index].set_alpha(0.1)
+
+        @cursor.connect("remove")
+        def on_remove(sel):
+            sel.artist[sel.target.index].set_alpha(0)
+            for sel in cursor.selections:
+                sel.artist[sel.target.index].set_alpha(0.1)
+
+        futuredue = GraphWidget()
+        futuredue.titlelabel.setText("Future Due")
+        futuredue.frame.layout().addWidget(canvas)
+
+        font = QFont()
+        font.setPointSize(15)
+
+        # total, avg, due tmrw
+        textwidget = QWidget()
+        textlayout = QGridLayout()
+        textwidget.setLayout(textlayout)
+
+        totalreviewslabel = QLabel("Total:")
+        totalreviewslabel.setAlignment(Qt.AlignRight)
+        totalreviewslabel.setFont(font)
+
+        totalreviewsstat = QLabel(f"{sum(due_counts['count'])} reviews")
+        totalreviewsstat.setAlignment(Qt.AlignLeft)
+        totalreviewsstat.setFont(font)
+
+        avglabel = QLabel("Average:")
+        avglabel.setAlignment(Qt.AlignRight)
+        avglabel.setFont(font)
+
+        avgstat = QLabel(f"{int(round(sum(due_counts['count']) / (daysrange + 1), 0))} reviews/day")
+        avgstat.setAlignment(Qt.AlignLeft)
+        avgstat.setFont(font)
+
+        tmrwlabel = QLabel("Due Tomorrow:")
+        tmrwlabel.setAlignment(Qt.AlignRight)
+        tmrwlabel.setFont(font)
+
+        tmrwstat = QLabel(f"{due_counts.iloc[1]['count']} reviews")
+        tmrwstat.setAlignment(Qt.AlignLeft)
+        tmrwstat.setFont(font)
+
+        textlayout.addWidget(totalreviewslabel, 0, 0)
+        textlayout.addWidget(totalreviewsstat, 0, 1)
+        textlayout.addWidget(avglabel, 1, 0)
+        textlayout.addWidget(avgstat, 1, 1)
+        textlayout.addWidget(tmrwlabel, 2, 0)
+        textlayout.addWidget(tmrwstat, 2, 1)
+
+        futuredue.frame.layout().addWidget(textwidget)
+
+        return futuredue
+
+    def createintervalsbar(self):
+        # handle ranges so if range falls into a given bracket, ivls are grouped into divisions.
+        # when plotting over ranges, keep the sql fetch the same, just filter the dataframe to cut out values before plotting
+        con = sqlite3.connect(database)
+        cur = con.cursor()
+        if self.deck:
+            cur.execute("""SELECT uc.ivl FROM user_cards uc
+            INNER JOIN cards c ON uc.cid = c.id
+            INNER JOIN decks d ON c.deck_ud = d.id
+            WHERE uc.uid = ?
+            AND d.id = ?
+            AND uc.ivl >= 86400""", (self.user.id, self.deck.did))
+        else:
+            cur.execute("""SELECT uc.ivl FROM user_cards uc
+            WHERE uc.uid = ?
+            AND uc.ivl >= 86400""", (self.user.id,))
+        # min ivl = 1 day to avoid having to deal with learing/new cards
+
+        ivlsdf = pd.DataFrame(cur.fetchall(), columns=['ivl'])
+        ivlsdf = (ivlsdf / 86400).astype(int)
+
+        canvas = MplCanvas(self, width=5, height=4, dpi=100)
+        canvas.setSizePolicy(QSizePolicy.MinimumExpanding, QSizePolicy.Minimum)
+
+        ivlcounts = ivlsdf.groupby(['ivl']).size().reset_index(name='count')
+
+        for i in range(1, max(ivlcounts['ivl']) + 1):
+            count = ivlcounts.loc[ivlcounts['ivl'] == i]
+            if count.empty:
+                ivlcounts.loc[len(ivlcounts)] = [i, 0]
+        ivlcounts = ivlcounts.sort_values(by=['ivl']).reset_index(drop=True)
+
+        print(ivlcounts)
+
+        canvas.axes.bar(ivlcounts['ivl'], ivlcounts['count'], color=self.statuscolours[0], alpha=1)
+        canvas.axes.yaxis.set_major_locator(ticker.MaxNLocator(integer=True))
+
+        # canvas.axes.set_xlabel('Due')
+        ax2 = canvas.axes.twinx()
+
+        ax2.plot(ivlcounts['ivl'], ivlcounts['count'].cumsum(), c='#646464')
+        ax2.fill_between(ivlcounts['ivl'], ivlcounts['count'].cumsum(), 0, alpha=0.1, color='#8C8C8C')
+        ax2.set_ylim(0, max(ivlcounts['count'].cumsum()) + 0.5)
+        ax2.set_ylim(bottom=0)
+
+        canvas.axes.set_xlim(right=max(ivlcounts['ivl'] + 0.5), left=min(ivlcounts['ivl']) - 0.5)
+
+        ax3 = canvas.axes.twinx()
+        ax3.bar(ivlcounts['ivl'], max(ivlcounts['count']), color='white', alpha=0)
+        ax3.get_yaxis().set_ticks([])
+
+        canvas.axes.spines[['top']].set_visible(False)
+        ax2.spines[['top', 'bottom', 'left', 'right']].set_visible(False)
+        ax3.spines[['top', 'left', 'bottom', 'right']].set_visible(False)
+
+        canvas.axes.spines[['left', 'bottom', 'right']].set_color('#8C8C8C')
+
+        canvas.axes.tick_params(colors='#8C8C8C')
+        ax2.tick_params(colors='#8C8C8C')
+        ax3.tick_params(colors='#8C8C8C')
+
+        canvas.axes.set_facecolor('#363636')
+        canvas.fig.set_facecolor('#363636')
+
+        canvas.setSizePolicy(QSizePolicy.MinimumExpanding, QSizePolicy.Minimum)
+
+        cursor = mplcursors.cursor(ax3, hover=mplcursors.HoverMode.Transient)
+
+        @cursor.connect("add")
+        def on_add(sel):
+            sel.annotation.get_bbox_patch().set(fc="white")
+            sel.annotation.arrow_patch.set(arrowstyle="simple", fc="white", alpha=0)
+            sel.annotation.set_fontsize(9)
+            index = sel.target.index
+            ivl = ivlcounts.iloc[index]["ivl"]
+            # range checking here later on
+            ivltext = f"with a {ivl} day inteval"
+            count = ivlcounts.iloc[index]["count"]
+            if count == 1:
+                cardsno = f"{count} card with a "
+            else:
+                cardsno = f"{count} cards with a "
+            cumulative = ivlcounts['count'].cumsum()[index]
+
+            x = decimal.Decimal(cumulative/sum(ivlcounts['count']))
+            cumpct = x * 100
+
+            rounded_percentage = cumpct.quantize(decimal.Decimal('0.1'), rounding=decimal.ROUND_HALF_UP)
+
+            sel.annotation.set_text(f"{cardsno}{ivltext}\nRunning Total: {rounded_percentage}%")
+            x, y, width, height = sel.artist[sel.target.index].get_bbox().bounds
+            sel.annotation.xy = (x + width / 2, y + height)
+            sel.artist[sel.target.index].set_alpha(0.1)
+
+        @cursor.connect("remove")
+        def on_remove(sel):
+            sel.artist[sel.target.index].set_alpha(0)
+            for sel in cursor.selections:
+                sel.artist[sel.target.index].set_alpha(0.1)
+
+        ivlswidget = GraphWidget()
+        ivlswidget.titlelabel.setText("Review Intervals")
+        ivlswidget.frame.layout().addWidget(canvas)
+
+        textwidget = QWidget()
+        textlayout = QVBoxLayout()
+        textwidget.setLayout(textlayout)
+
+        font = QFont()
+        font.setPointSize(15)
+
+        con = sqlite3.connect(database)
+        cur = con.cursor()
+        if self.deck:
+            cur.execute("""SELECT AVG(uc.ivl) FROM user_cards uc
+                        INNER JOIN cards c ON uc.cid = c.id
+                        INNER JOIN decks d ON c.deck_id = d.id
+                        WHERE uc.uid = ?
+                        AND d.id = ?""", (self.user.id, self.deck.id))
+        else:
+            cur.execute("""SELECT AVG(ivl) FROM user_cards
+                        WHERE uid = ?""", (self.user.id,))
+
+        avgivl = cur.fetchone()[0]
+
+        avgivllabel = QLabel(f"Average Interval: {converttime(avgivl, full=True)}")
+        avgivllabel.setAlignment(Qt.AlignHCenter)
+        avgivllabel.setFont(font)
+
+        textlayout.addWidget(avgivllabel)
+
+        ivlswidget.frame.layout().addWidget(textwidget)
+
+        return ivlswidget
+
+    def createanswerbuttonsbar(self):
+        con = sqlite3.connect(database)
+        cur = con.cursor()
+
+        learningcounts = []
+        youngcounts = []
+        maturecounts = []
+
+        if self.deck:
+            for i in range(4):
+                cur.execute("""SELECT COUNT(r.id) FROM revlog r
+                INNER JOIN user_cards uc ON r.ucid = uc.id
+                INNER JOIN cards c ON uc.cid = c.id
+                WHERE r.ease = ?
+                AND uc.uid = ?
+                AND c.deck_id = ?
+                AND r.status = 1 OR r.status = 3""", (i, self.user.id, self.deck.did))
+                count = cur.fetchone()[0]
+                learningcounts.append(count)
+        else:
+            for i in range(4):
+                cur.execute("""SELECT COUNT(r.id) FROM revlog r
+                INNER JOIN user_cards uc ON r.ucid = uc.id
+                WHERE r.ease = ?
+                AND uc.uid = ?
+                AND r.status = 1 OR r.status = 3""", (i, self.user.id))
+                count = cur.fetchone()[0]
+                learningcounts.append(count)
+
+        if self.deck:
+            for i in range(4):
+                cur.execute("""SELECT COUNT(r.id) FROM revlog r
+                INNER JOIN user_cards uc ON r.ucid = uc.id
+                INNER JOIN cards c ON uc.cid = c.id
+                WHERE r.ease = ?
+                AND uc.uid = ?
+                AND c.deck_id = ?
+                AND r.status = 2
+                AND r.lastivl < ?""", (i, self.user.id, self.deck.did, 30 * 86400))
+                count = cur.fetchone()[0]
+                youngcounts.append(count)
+        else:
+            for i in range(4):
+                cur.execute("""SELECT COUNT(r.id) FROM revlog r
+                INNER JOIN user_cards uc ON r.ucid = uc.id
+                WHERE r.ease = ?
+                AND uc.uid = ?
+                AND r.status = 2
+                AND r.lastivl < ?""", (i, self.user.id, 30 * 86400))
+                count = cur.fetchone()[0]
+                youngcounts.append(count)
+
+        if self.deck:
+            for i in range(4):
+                cur.execute("""SELECT COUNT(r.id) FROM revlog r
+                INNER JOIN user_cards uc ON r.ucid = uc.id
+                INNER JOIN cards c ON uc.cid = c.id
+                WHERE r.ease = ?
+                AND uc.uid = ?
+                AND c.deck_id = ?
+                AND r.status = 2
+                AND r.lastivl >= ?""", (i, self.user.id, self.deck.did, 30 * 86400))
+                count = cur.fetchone()[0]
+                maturecounts.append(count)
+        else:
+            for i in range(4):
+                cur.execute("""SELECT COUNT(r.id) FROM revlog r
+                INNER JOIN user_cards uc ON r.ucid = uc.id
+                WHERE r.ease = ?
+                AND uc.uid = ?
+                AND r.status = 2
+                AND r.lastivl >= ?""", (i, self.user.id, 30 * 86400))
+                count = cur.fetchone()[0]
+                maturecounts.append(count)
+
+        allcounts = [x for x in zip(learningcounts, youngcounts, maturecounts)]
+        print(allcounts)
+        x = np.arange(3)
+        print(x)
+
+        canvas = MplCanvas(self, width=5, height=4, dpi=100)
+
+        # Set the width of each bar
+        bar_width = 0.15
+
+        # Calculate the x-axis positions for each group of bars
+        # x_pos = [i for i in range(12)]
+
+        # Plot the bars for the first set of values
+        canvas.axes.bar(x, allcounts[0], width=bar_width-0.01, color=self.answercolours[0])
+        canvas.axes.bar(x + bar_width, allcounts[1], width=bar_width-0.01, color=self.answercolours[1])
+        canvas.axes.bar(x + 2 * bar_width, allcounts[2], width=bar_width-0.01, color=self.answercolours[2])
+        canvas.axes.bar(x + 3 * bar_width, allcounts[3], width=bar_width-0.01, color=self.answercolours[3])
+
+        # Set the x-axis tick positions and labels
+        canvas.axes.set_xticks(x + bar_width * 1.5)
+        # todo change labels
+        canvas.axes.set_xticklabels(['Learning', 'Young', 'Mature'])
+
+        x_positions = np.concatenate([x, x + bar_width, x + 2 * bar_width, x + 3 * bar_width])
+        # array of all plotted x positions which will be used for plotting the highlight bars and allow for
+        # case handling of the tooltip
+
+        canvas.setSizePolicy(QSizePolicy.MinimumExpanding, QSizePolicy.Minimum)
+
+        ax3 = canvas.axes.twinx()
+        ax3.bar(x_positions, np.max(allcounts, axis=None)*len(x_positions), color='white', alpha=0, width=bar_width-0.01)
+        ax3.get_yaxis().set_ticks([])
+
+        canvas.axes.spines[['top']].set_visible(False)
+        ax3.spines[['top', 'left', 'bottom', 'right']].set_visible(False)
+
+        canvas.axes.spines[['left', 'bottom', 'right']].set_color('#8C8C8C')
+        canvas.axes.tick_params(colors='#8C8C8C')
+        ax3.tick_params(colors='#8C8C8C')
+
+        canvas.axes.set_facecolor('#363636')
+        canvas.fig.set_facecolor('#363636')
+
+        cursor = mplcursors.cursor(ax3, hover=mplcursors.HoverMode.Transient)
+
+        @cursor.connect("add")
+        def on_add(sel):
+            sel.annotation.get_bbox_patch().set(fc="white")
+            sel.annotation.arrow_patch.set(arrowstyle="simple", fc="white", alpha=0)
+            sel.annotation.set_fontsize(9)
+            index = sel.target.index
+            countvalues = np.array(allcounts).flatten()
+            if index % 3 == 0:
+                offset = 0
+            elif index % 3 == 1:
+                offset = 1
+            else:
+                offset = 2
+
+            if index // 3 == 0:
+                ease = 0
+            elif index // 3 == 1:
+                ease = 1
+            elif index // 3 == 2:
+                ease = 2
+            else:
+                ease = 3
+
+            total = 0
+            for i in range(0, len(countvalues), 3):
+                print(i)
+                total += countvalues[i+offset]
+
+            pressedcount = countvalues[index]
+            button = f"Button: {ease}"  # could change this to easy, hard, etc. using a dict
+            timespressed = f"Times pressed: {pressedcount} ({round((pressedcount / total) * 100, 2)}%)"
+            correct = f"{total - countvalues[index % 3]}/{total} correct ({round(((total - countvalues[index % 3])/ total) * 100, 2)}%)"
+
+            sel.annotation.set_text(f"{button}\n{timespressed}\n{correct}")
+            x, y, width, height = sel.artist[sel.target.index].get_bbox().bounds
+            sel.annotation.xy = (x + width / 2, y + height)
+            sel.artist[sel.target.index].set_alpha(0.1)
+
+        @cursor.connect("remove")
+        def on_remove(sel):
+            sel.artist[sel.target.index].set_alpha(0)
+            for sel in cursor.selections:
+                sel.artist[sel.target.index].set_alpha(0.1)
+
+        return canvas
+
+
+class MplCanvas(FigureCanvasQTAgg):
+    def __init__(self, parent=None, width=5, height=4, dpi=100):
+        self.fig = Figure(figsize=(width, height), dpi=dpi)
+        self.axes = self.fig.add_subplot(111)
+        super(MplCanvas, self).__init__(self.fig)
+
+
+class TodayStatsWidget(QWidget):
+    def __init__(self):
+        super().__init__()
+        loadUi("todaywidget.ui", self)
+        self.setStyleSheet('background-color:#363636')
+
+
+class GraphWidget(QWidget):
+    def __init__(self):
+        super().__init__()
+        loadUi("graphwidget.ui", self)
+        self.setStyleSheet('background-color:#363636')
 
 
 class Browse(QMainWindow):
@@ -2804,19 +4414,10 @@ class Browse(QMainWindow):
 
         self.searchbutton.clicked.connect(self.fillpublicdecks)
 
-    def regexp(self, expr, item):
-        """
-        A function to be used in filtering and retrieving published decks, matching the user's input to fields in the database
-        :param expr: the input to be used when filtering
-        :param item: the field which is being checked for a match with the expression
-        :return: returns True if a match is found and re.search() returns a match item
-        """
-        return re.search(expr, item, re.IGNORECASE) is not None
-
     def fetchpublicdecks(self, searchfilter):
         con = sqlite3.connect(database)
         cur = con.cursor()
-        con.create_function("REGEXP", 2, self.regexp)
+        con.create_function("REGEXP", 2, regexp)
         if searchfilter:
             try:
                 cur.execute("""SELECT ud.id, d.name, d.desc, u.username FROM decks d INNER JOIN user_decks ud ON d.id 
@@ -2994,7 +4595,6 @@ class PublicDeckView(QWidget):
         con.commit()
         cur.close()
         con.close()
-        # todo call refresh function here, or other system
 
     def checkifinlibrary(self):
         con = sqlite3.connect(database)
@@ -3066,6 +4666,39 @@ def refreshmainwindows():
     stack.widget(6).refresh()
     stack.widget(7).refresh()
 
+
+def converttime(seconds, full=False):
+    # todo, issue in time conversion, think it is flooring
+    duration = datetime.timedelta(seconds=seconds)
+
+    years = duration.days // 365
+    months = duration.days // 30.44 % 12
+    days = duration.days % 30.44
+    hours = duration.seconds // 3600
+    minutes = (duration.seconds // 60) % 60
+
+    if not full:
+        if years > 0:
+            return f"{years:.1f}y"
+        elif months > 0:
+            return f"{months:.1f}mo"
+        elif days > 0:
+            return f"{days:.0f}d"
+        elif hours > 0:
+            return f"{hours:.0f}h"
+        else:
+            return f"{minutes:.0f}m"
+    else:
+        if years > 0:
+            return f"{years:.1f} years"
+        elif months > 0:
+            return f"{months:.1f} months"
+        elif days > 0:
+            return f"{days:.0f} days"
+        elif hours > 0:
+            return f"{hours:.0f} hours"
+        else:
+            return f"{minutes:.0f} minutes"
 
 def sha_256(message):
     # Initialize hash values: (first 32 bits of the fractional parts of the square roots of the first 8 primes 2..19):
@@ -3178,12 +4811,19 @@ def right_rotate(num, shift, size=32):
     return (num >> shift) | (num << size - shift)
 
 
+def regexp(expr, item):
+    """
+    A function to be used in filtering and retrieving published decks, matching the user's input to fields in the database
+    :param expr: the input to be used when filtering
+    :param item: the field which is being checked for a match with the expression
+    :return: returns True if a match is found and re.search() returns a match item
+    """
+    return re.search(expr, item, re.IGNORECASE) is not None
+
+
 """
 REDUNDANT CODE BELOW!!!! NEEDS TO BE MIGRATED TO GUI.
 """
-
-
-# todo - migrate card review and spaced repetition algorithm/handling - need to revies queues
 
 
 class Main:
@@ -3191,7 +4831,7 @@ class Main:
         self.user = None
         self.login()
 
-    # todo add updation of user dom table on actions
+    # todo add updation of user dom table on any actions (optional)
 
     # login done
     # deck selection done
@@ -3303,6 +4943,7 @@ class Main:
         ef = efs[ids.index(config)]
         self._copy_cards(did, cur, con, ef)
         print(f"Deck {deckname} successfully added to your library")
+
 
 """
 PROGRAM EXECUTION:

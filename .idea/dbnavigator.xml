@@ -23,7 +23,6 @@
   </component>
   <component name="DBNavigator.Project.DatabaseFileManager">
     <open-files>
-      <object connection-id="6585c18a-1f41-42f8-a6e7-bd51ea421e6a" object-ref="schemas/main/tables/configs" />
       <object connection-id="6585c18a-1f41-42f8-a6e7-bd51ea421e6a" object-ref="schemas/main/tables/user_cards" />
       <object connection-id="6585c18a-1f41-42f8-a6e7-bd51ea421e6a" object-ref="schemas/main/tables/user_decks" />
       <object connection-id="6585c18a-1f41-42f8-a6e7-bd51ea421e6a" object-ref="schemas/main/tables/revlog" />
@@ -31,6 +30,7 @@
   </component>
   <component name="DBNavigator.Project.DatasetFilterManager">
     <filter-actions connection-id="6585c18a-1f41-42f8-a6e7-bd51ea421e6a" dataset="main.formats" active-filter-id="EMPTY_FILTER" />
+    <filter-actions connection-id="6585c18a-1f41-42f8-a6e7-bd51ea421e6a" dataset="main.users" active-filter-id="EMPTY_FILTER" />
     <filter-actions connection-id="6585c18a-1f41-42f8-a6e7-bd51ea421e6a" dataset="main.user_decks" active-filter-id="EMPTY_FILTER" />
     <filter-actions connection-id="6585c18a-1f41-42f8-a6e7-bd51ea421e6a" dataset="main.revlog" active-filter-id="EMPTY_FILTER" />
     <filter-actions connection-id="6585c18a-1f41-42f8-a6e7-bd51ea421e6a" dataset="main.templates" active-filter-id="EMPTY_FILTER" />
@@ -53,6 +53,9 @@
   <component name="DBNavigator.Project.ObjectQuickFilterManager">
     <last-used-operator value="EQUAL" />
     <filters />
+  </component>
+  <component name="DBNavigator.Project.ParserDiagnosticsManager">
+    <diagnostics-history />
   </component>
   <component name="DBNavigator.Project.Settings">
     <connections>
