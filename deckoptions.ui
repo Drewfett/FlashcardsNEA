@@ -191,7 +191,7 @@ padding: 3px;</string>
 padding: 3px;</string>
            </property>
            <property name="text">
-            <string>Steps (Seconds)</string>
+            <string>Steps (Minutes)</string>
            </property>
            <property name="alignment">
             <set>Qt::AlignLeading|Qt::AlignLeft|Qt::AlignVCenter</set>

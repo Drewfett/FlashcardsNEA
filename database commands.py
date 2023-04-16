@@ -11,7 +11,9 @@ def create_tables(db):
         password_hash TEXT,
         email TEXT,
         doc INT,
-        dom INT
+        dom INT,
+        collapsetime INT,
+        neworder INT
     )
     """
 
@@ -136,7 +138,6 @@ def create_tables(db):
     )
     """
 
-
     conn = sqlite3.connect(db)
     cur = conn.cursor()
     create_statements = [create_users, create_cards, create_user_cards, create_decks, create_user_decks,
@@ -149,10 +150,12 @@ def create_tables(db):
 
 con = sqlite3.connect(db)
 cur = con.cursor()
+# cur.execute("""ALTER TABLE users ADD COLUMN
+#         neworder INT;""")
 # cur.execute("DROP TABLE templates")
 # cur.execute("DROP TABLE user_cards")
 
-cur.execute("""DROP TABLE cards""")
+# cur.execute("""DROP TABLE cards""")
 create_tables(db)
 
 

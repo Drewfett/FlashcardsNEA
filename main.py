@@ -7,8 +7,8 @@ from PyQt5 import QtWidgets, Qt
 from PyQt5.QtGui import QColor, QFont
 from PyQt5.uic import loadUi
 from PyQt5.QtWidgets import QDialog, QApplication, QAction, QStackedWidget, QMainWindow, QMenu, QToolButton, QLabel, \
-    QScrollArea, QSizePolicy, QVBoxLayout, QHeaderView, QCheckBox, QLineEdit, QComboBox, QSpinBox, QTableView, \
-    QSpacerItem, QAbstractItemView, QTreeView, QPushButton, QListView, QRadioButton, QTextEdit, QGridLayout, QHBoxLayout
+    QSizePolicy, QVBoxLayout, QHeaderView, QLineEdit, QSpinBox, QTableView, QSpacerItem, QAbstractItemView, QTreeView, \
+    QRadioButton, QGridLayout, QHBoxLayout, QMenuBar, QComboBox, QButtonGroup
 from PyQt5.Qt import QStandardItem, QStandardItemModel, QWidget
 from PyQt5.QtCore import Qt, QModelIndex
 from PyQt5.QtWebEngineWidgets import QWebEngineView
@@ -23,10 +23,12 @@ import numpy as np
 import matplotlib.patches as mpatches
 import pandas as pd
 from matplotlib import ticker
+import matplotlib.colors as mcolors
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.figure import Figure
 from matplotlib.ticker import MaxNLocator
 
+# todo maybe add descriptions to graphs
 # MAIN THINGS TODO:
 # issues with review of shared decks, need to check what cards are being fetched in each statement
 
@@ -39,26 +41,10 @@ from matplotlib.ticker import MaxNLocator
 
 
 # note todo - include collapse condition when showing counts for learning/relearning cards
+# todo - determine whether deleting fields affects template functionality (as inclusion of fields is only controlled
+#  when manging templates, maybe just need to check for front and back format and delete {{field}} when it appears)
 
-
-# STATS WINDOWS Important - would add to complexity due to aggregate functions,
-# try to get this working asap
-# IDEAS:
-# statistics by deck and whole collection
-# - no of cards studied today, total time spent studying, avg time, counts for each difficulty and %
-# correct answers on mature cards (i.e. hard, good or easy on cards with previous intervals of > 21/30 days)
-# cards due in the future, plot by days ahead and no
-# [work out way to show historic reviews (number on each day)] - matplotlib imshow(z)?
-# ^ breakdown of these past reviews on whether cards were young, mature, learning, relearning, new etc.
-# [both time spent and no of reviews] ^
-# Pie chart breakdown of cards in the deck
-# Plot of card intervals
-# bar chart of card ease factors
-# Success rate breakdown by hours over a given time frame
-# Answer buttons pressed for each card type - (re+)learning, young, mature
-# When cards were added? Not sure how this would be done or if it serves mutch purpose
-# also want session statistics maybe?
-# be open to any other ideas or suggestions
+# todo consider allowing the editing of decks descriptions
 
 #  Templates ^ part of displaying the flashcards - done, some testing done but do so more thoroughly later
 #      - will need to add a field to the cards table for format type, could remove template field, but could prove
@@ -226,6 +212,18 @@ class User:
         # store general settings here (preferences in anki)
         self.id = id
         self.name = name
+        self.collapsetime = None
+        self.neworder = None # (0 = new first, 1 = new last, [2 = spread out])
+        self.fetchpreferences()
+
+    def fetchpreferences(self):
+        con = sqlite3.connect(database)
+        cur = con.cursor()
+        cur.execute("""SELECT collapsetime, neworder FROM users WHERE id = ?""", (self.id,))
+        self.collapsetime, self.neworder = cur.fetchone()
+
+        cur.close()
+        con.close()
 
 
 class Deck(QStandardItem):
@@ -512,28 +510,133 @@ def repositionitem(list, old_index, new_index):
 """WINDOW CLASSES"""
 
 
-class WelcomeScreen(QDialog):
+class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
+        self.user = None
+
+        self.menubar = QMenuBar(self)
+        # create menu items and add them to the menu bar
+        omo_menu = self.menubar.addMenu("Omo")
+        # Preceding spaces used when naming actions because they are reserved keywords on macOS
+        # (and for indentation purposes)
+        omo_menu.addAction(" Preferences")
+        omo_menu.addAction(" Sign Out")
+        omo_menu.addSeparator()
+
+        quit_action = QAction(" Quit", self)
+        quit_action.triggered.connect(QApplication.quit)
+        omo_menu.addAction(quit_action)
+
+        # connect preferences action and disable initially
+        preferences_action = omo_menu.actions()[0]
+        preferences_action.setObjectName("Preferences")
+        preferences_action.triggered.connect(self.openpreferences)
+        preferences_action.setEnabled(False)
+
+        # connect signout action and disable initially
+        signout_action = omo_menu.actions()[1]
+        signout_action.setObjectName("Signout")
+        signout_action.triggered.connect(self.signout)
+        signout_action.setEnabled(False)
+
+        # set the QMenuBar for the main window
+        self.setMenuBar(self.menubar)
+
+        # create a QStackedWidget to manage the views
+        self.stack = QStackedWidget()
+        self.stack.addWidget(WelcomeScreen(self.stack, self))
+        self.stack.addWidget(Login(self.stack, self))
+        self.stack.addWidget(CreateAccount(self.stack, self))
+
+        # set the QStackedWidget as the central widget of the main window
+        self.setCentralWidget(self.stack)
+
+    def signout(self):
+        # clear user
+        self.user = None
+
+        # clear all widgets in the stack besides the welcome screen
+        while self.stack.count() > 1:
+            self.stack.removeWidget(self.stack.widget(1))
+
+        # disable the "Preferences" and "Sign Out" actions
+        preferences_action = self.menubar.findChild(QAction, "Preferences")
+        signout_action = self.menubar.findChild(QAction, "Signout")
+        preferences_action.setEnabled(False)
+        signout_action.setEnabled(False)
+
+        # add new login and account creation windows (to clear text inputted text)
+        self.stack.addWidget(Login(self.stack, self))
+        self.stack.addWidget(CreateAccount(self.stack, self))
+
+        # show the welcome screen
+        self.stack.setCurrentIndex(0)
+
+    def openpreferences(self):
+        if not self.user:
+            return
+
+        self.preferenceswindow = PreferencesWindow(self.user)
+        self.preferenceswindow.buttonBox.accepted.connect(self.savepreferences)
+        self.preferenceswindow.exec()
+
+    def savepreferences(self):
+        self.user.collapsetime = self.preferenceswindow.collapsetimebox.value() * 60
+        self.user.neworder = self.preferenceswindow.neworderbox.currentData()
+
+        con = sqlite3.connect(database)
+        cur = con.cursor()
+        cur.execute("""UPDATE users SET
+         collapsetime = ?,
+         neworder = ?
+         WHERE id = ?""", (self.user.collapsetime, self.user.neworder, self.user.id))
+        con.commit()
+        cur.close()
+        con.close()
+
+        self.preferenceswindow.deleteLater()
+
+
+class PreferencesWindow(QDialog):
+    def __init__(self, user):
+        super().__init__()
+        loadUi("preferenceswindow.ui", self)
+        self.user = user
+        self.collapsetimebox.setValue(self.user.collapsetime / 60)
+        self.neworderbox.addItem("Show new cards after reviews", 0)
+        self.neworderbox.addItem("Show new cards before reviews", 1)
+        # self.neworderbox.addItem(QStandardItem("Show new cards mixed in with reviews"), 2)
+
+        self.neworderbox.setCurrentIndex(self.user.neworder)
+
+
+class WelcomeScreen(QDialog):
+    def __init__(self, stack, mainwindow):
+        super().__init__()
         loadUi("welcome.ui", self)
+        self.stack = stack
+        self.mainwindow = mainwindow
         self.login.clicked.connect(self.gotologin)
         self.createaccount.clicked.connect(self.gotocreation)
 
     def gotologin(self):
-        stack.setCurrentIndex(1)
+        self.stack.setCurrentIndex(1)
 
     def gotocreation(self):
-        stack.setCurrentIndex(2)
+        self.stack.setCurrentIndex(2)
 
 
 class Login(QDialog):
-    def __init__(self):
+    def __init__(self, stack, mainwindow):
         super().__init__()
         loadUi("login.ui", self)
         self.user = None
+        self.stack = stack
+        self.mainwindow = mainwindow
         self.passwordfield.setEchoMode(QtWidgets.QLineEdit.Password)
         self.login.clicked.connect(self.loginfunction)
-        self.createaccount.clicked.connect(lambda: stack.setCurrentIndex(2))
+        self.createaccount.clicked.connect(lambda: self.stack.setCurrentIndex(2))
 
     def emptyedits(self):
         # to be used later if logout enabled
@@ -544,9 +647,9 @@ class Login(QDialog):
         if self.user:
             # clear all other windows if logged in previously
             self.user = None
-            for i in range(stack.count() - 3):
-                widget = stack.widget(3)
-                stack.removeWidget(widget)
+            for i in range(self.stack.count() - 3):
+                widget = self.stack.widget(3)
+                self.stack.removeWidget(widget)
                 widget.deleteLater()
             pass
 
@@ -570,20 +673,27 @@ class Login(QDialog):
                             (email,))
                 name, uid = cur.fetchone()
                 self.user = User(uid, name)
-                stack.widget(2).user = self.user
+                self.stack.widget(2).user = self.user
 
-                decksmain = DecksMain(self.user)
-                addcard = AddCard(self.user)
-                cardsmain = CardsMain(self.user)
-                stats = StatsPage(self.user)
-                browse = Browse(self.user)
-                stack.addWidget(decksmain)
-                stack.addWidget(addcard)
-                stack.addWidget(cardsmain)
-                stack.addWidget(stats)
-                stack.addWidget(browse)
+                decksmain = DecksMain(self.user, self.stack)
+                addcard = AddCard(self.user, self.stack)
+                cardsmain = CardsMain(self.user, self.stack)
+                stats = StatsPage(self.user, self.stack)
+                browse = Browse(self.user, self.stack)
+                self.stack.addWidget(decksmain)
+                self.stack.addWidget(addcard)
+                self.stack.addWidget(cardsmain)
+                self.stack.addWidget(stats)
+                self.stack.addWidget(browse)
 
-                gotodecks()
+                self.mainwindow.user = self.user
+
+                preferences = self.mainwindow.menubar.findChild(QAction, "Preferences")
+                preferences.setEnabled(True)
+                signout = self.mainwindow.menubar.findChild(QAction, "Signout")
+                signout.setEnabled(True)
+
+                gotodecks(self.stack)
 
             else:
                 self.error.setText("Email is not registered")
@@ -592,13 +702,14 @@ class Login(QDialog):
 
 
 class CreateAccount(QDialog):
-    def __init__(self):
-        super().__init__()
+    def __init__(self, stack, mainwindow):
+        super().__init__(parent=mainwindow)
         loadUi("create_account.ui", self)
         self.user = None
+        self.stack = stack
         self.passwordfield.setEchoMode(QtWidgets.QLineEdit.Password)
         self.register_.clicked.connect(self.registeracc)
-        self.login.clicked.connect(lambda: stack.setCurrentIndex(1))
+        self.login.clicked.connect(lambda: self.stack.setCurrentIndex(1))
 
     def emptyedits(self):
         # to be used later if logout enabled
@@ -610,11 +721,10 @@ class CreateAccount(QDialog):
         if self.user:
             # clear all other windows if logged in previously
             self.user = None
-            for i in range(stack.count() - 3):
-                widget = stack.widget(3)
-                stack.removeWidget(widget)
+            for i in range(self.stack.count() - 3):
+                widget = self.stack.widget(3)
+                self.stack.removeWidget(widget)
                 widget.deleteLater()
-                print(f"removed {i + 1}")
             pass
 
         username = self.usernamefield.text()
@@ -647,32 +757,41 @@ class CreateAccount(QDialog):
                 con.commit()
 
                 self.user = User(uid, username)
-                stack.widget(1).user = self.user
+                self.stack.widget(1).user = self.user
 
-                decksmain = DecksMain(self.user)
-                addcard = AddCard(self.user)
-                cardsmain = CardsMain(self.user)
-                stats = StatsPage(self.user)
-                browse = Browse(self.user)
-                stack.addWidget(decksmain)
-                stack.addWidget(addcard)
-                stack.addWidget(cardsmain)
-                stack.addWidget(stats)
-                stack.addWidget(browse)
-                gotodecks()
+                decksmain = DecksMain(self.user, self.stack)
+                addcard = AddCard(self.user, self.stack)
+                cardsmain = CardsMain(self.user, self.stack)
+                stats = StatsPage(self.user, self.stack)
+                browse = Browse(self.user, self.stack)
+                self.stack.addWidget(decksmain)
+                self.stack.addWidget(addcard)
+                self.stack.addWidget(cardsmain)
+                self.stack.addWidget(stats)
+                self.stack.addWidget(browse)
+
+                self.mainwindow.user = self.user
+
+                preferences = self.mainwindow.menubar.findChild(QAction, "Preferences")
+                preferences.setEnabled(True)
+                signout = self.mainwindow.menubar.findChild(QAction, "Signout")
+                signout.setEnabled(True)
+
+                gotodecks(self.stack)
 
             cur.close()
             con.close()
 
 
-class DecksMain(QMainWindow):
-    def __init__(self, user):
+class DecksMain(QWidget):
+    def __init__(self, user, stack):
         super().__init__()
         loadUi("decksmain.ui", self)
         self.adddeckwindow = None
         self.user = user
+        self.stack = stack
 
-        connectmainbuttons(self)
+        connectmainbuttons(self, self.stack)
 
         # initialising the tree model
         self.treeModel = QStandardItemModel(0, 4, self.decktree)
@@ -728,7 +847,7 @@ class DecksMain(QMainWindow):
         cur.close()
         con.close()
         self.adddeckwindow = None
-        refreshmainwindows()
+        self.refresh()
 
     def refreshtree(self):
         self.treeModel.removeRows(0, self.treeModel.rowCount())
@@ -747,10 +866,10 @@ class DecksMain(QMainWindow):
 
     def opendeck(self, val):
         deck = self.decktree.model().item(val.row())
-        deckselect = DeckSelected(self.user, deck)
-        stack.addWidget(deckselect)
+        deckselect = DeckSelected(self.user, deck, self.stack)
+        self.stack.addWidget(deckselect)
         self.adddeckwindow = None
-        stack.setCurrentIndex(8)
+        self.stack.setCurrentIndex(8)
 
     def fetch_decks(self):
         # todo add id restrictions and decide on access method (id or name)
@@ -971,13 +1090,14 @@ class DeleteDeckDialog(QDialog):
         con.close()
 
 
-class DeckSelected(QMainWindow):
-    def __init__(self, user, deck):
+class DeckSelected(QWidget):
+    def __init__(self, user, deck, stack):
         self.user = user
         self.deck = deck
+        self.stack = stack
         super().__init__()
         loadUi("deckselected.ui", self)
-        connectmainbuttons(self)
+        connectmainbuttons(self, self.stack)
 
         self.fetchcounts()
 
@@ -990,10 +1110,10 @@ class DeckSelected(QMainWindow):
         self.optionswindow.show()
 
     def study(self):
-        self.study = Study(self.user, self.deck)
+        self.study = Study(self.user, self.deck, self.stack)
 
     def fetchcounts(self):
-        tempstudywindow = Study(self.user, self.deck, counts=True)
+        tempstudywindow = Study(self.user, self.deck, self.stack, counts=True)
         newcount, learningcount, reviewcount = tempstudywindow.fetchcounts()
         if not newcount == learningcount == reviewcount == 0:
             self.newcount.setText(f"{newcount}")
@@ -1024,9 +1144,10 @@ class DeckSelected(QMainWindow):
 # maybe create a study class that handles both front and back and switches between the two
 
 class Study:
-    def __init__(self, user, deck, counts=False):
+    def __init__(self, user, deck, stack, counts=False):
         self.user = user
         self.deck = deck
+        self.stack = stack
         self.card = None
         self.template = None
         self.starttime = None
@@ -1037,8 +1158,6 @@ class Study:
         self.queues = [Queue(), Queue(), Queue()]
         # could rewrite to have 3 seperate queues
 
-        self.collapsetime = 1200
-        self.newspread = 0  # (0 = new first, 1 = new last, [2 = spread out])
         # todo add configuration for these 2 in user preferences, hard code rn ^
         self.reps = 0  # not used rn
 
@@ -1047,16 +1166,16 @@ class Study:
         if counts:
             return
 
-        self.studyfront = StudyFront()
+        self.studyfront = StudyFront(self.stack)
         self.studyfront.flipbutton.clicked.connect(self.flip)
-        stack.addWidget(self.studyfront)
+        self.stack.addWidget(self.studyfront)
 
-        self.studyback = StudyBack()
+        self.studyback = StudyBack(self.stack)
         self.studyback.againbutton.clicked.connect(lambda: self.review(0))
         self.studyback.hardbutton.clicked.connect(lambda: self.review(1))
         self.studyback.goodbutton.clicked.connect(lambda: self.review(2))
         self.studyback.easybutton.clicked.connect(lambda: self.review(3))
-        stack.addWidget(self.studyback)
+        self.stack.addWidget(self.studyback)
 
         self.startreview()
         """ 
@@ -1102,7 +1221,7 @@ class Study:
         front = self.fillfront()
         self.studyfront.htmlview.setHtml(
             f"""<head><style>{self.template.styling}</style></head> <body class='card'>{front}</body>""")
-        stack.setCurrentIndex(9)
+        self.stack.setCurrentIndex(9)
 
     def fillfront(self):
         front = re.sub(r"\n", "", self.template.front)
@@ -1134,16 +1253,16 @@ class Study:
         self.card = self.get_card()
         if not self.card:
             print("GO BACK TO DECK SELECTED PAGE")
-            for i in range(stack.count() - 9):
-                widget = stack.widget(9)
-                stack.removeWidget(widget)
+            for i in range(self.stack.count() - 9):
+                widget = self.stack.widget(9)
+                self.stack.removeWidget(widget)
                 widget.deleteLater()
-                stack.setCurrentIndex(8)
-                stack.widget(8).fetchcounts()
+                self.stack.setCurrentIndex(8)
+                self.stack.widget(8).fetchcounts()
             return
 
     def flip(self):
-        stack.setCurrentIndex(10)
+        self.stack.setCurrentIndex(10)
         self.showback()
 
     def showback(self):
@@ -1163,7 +1282,7 @@ class Study:
 
         self.studyback.htmlview.setHtml(
             f"""<head><style>{self.template.styling}</style></head> <body class='card'>{back}</body>""")
-        stack.setCurrentIndex(10)
+        self.stack.setCurrentIndex(10)
 
     def review(self, ease):
         self.endtime = time()
@@ -1334,8 +1453,6 @@ class Study:
         due_ivls = [0] * 4
         new_ivls = [0] * 4
 
-        print(lapse_delays)
-
         new_ivls[0] = self.card.interval * self.deck.config.lapse_percent / 100
         if new_ivls[0] < min_ivl:
             new_ivls[0] = min_ivl
@@ -1404,7 +1521,7 @@ class Study:
         if not collapse:
             cutoff = time()
         else:
-            cutoff = time() + self.collapsetime
+            cutoff = time() + self.user.collapsetime
 
         # todo consider how to integrate review per day count into here, review and new sections, could possibly use
         #  some variable to track fetches, or might work out due to how queue formation works sequentially.
@@ -1549,7 +1666,13 @@ class Study:
     def time_for_new_card(self):
         # determines if a new card should be shown (in relation to the review cards)
         # placeholder right now
-        return False
+        if self.user.neworder == 0:
+            return False
+        elif self.user.neworder == 1:
+            return True
+        elif self.user.neworder == 2:
+            # need some other function to manage spread of new cards within other reviews
+            pass
 
     def review_card(self):
         card = self.get_card()
@@ -1566,22 +1689,22 @@ class Study:
         # self.calculate_interval_new(card, ease, start, end)
 
 
-class StudyFront(QMainWindow):
-    def __init__(self):
+class StudyFront(QWidget):
+    def __init__(self, stack):
         super().__init__()
         loadUi("studyfront.ui", self)
-        connectmainbuttons(self)
+        connectmainbuttons(self, stack)
 
         self.htmlview = QWebEngineView()
 
         self.mainvlayout.insertWidget(2, self.htmlview, 1)
 
 
-class StudyBack(QMainWindow):
-    def __init__(self):
+class StudyBack(QWidget):
+    def __init__(self, stack):
         super().__init__()
         loadUi("studyback.ui", self)
-        connectmainbuttons(self)
+        connectmainbuttons(self, stack)
 
         self.htmlview = QWebEngineView()
 
@@ -1741,8 +1864,6 @@ class DeckOptions(QWidget):
         except Exception as e:
             self.errorlabel.setText(str(e))
             return
-
-        print(vars(self.current_config))
 
     def add(self):
         # add now working
@@ -1914,7 +2035,6 @@ class DeckOptions(QWidget):
         cur.execute(f"""DELETE FROM configs where id = {self.current_config.id}""")
         self.configscombobox.setCurrentIndex(tempidx)
         self.configscombobox.removeItem(delidx)
-        # print(len(self.configs))
         del self.configs[delidx]
         # print(len(self.configs))
         # print("deleting")
@@ -1933,14 +2053,14 @@ class CFGNameWindow(QWidget):
             self.confirmbutton.setText("Confirm")
 
 
-class CardsMain(QMainWindow):
+class CardsMain(QWidget):
     # todo get filters working
     # make sure a general search matches against all card data, not just sortfield, also best to split before matching
-    def __init__(self, user):
+    def __init__(self, user, stack):
         self.user = user
         super().__init__()
         loadUi("cardsmain.ui", self)
-        connectmainbuttons(self)
+        connectmainbuttons(self, stack)
         self.searchbutton.clicked.connect(self.search)
 
         # setting up filter button
@@ -2286,14 +2406,14 @@ class CardsMain(QMainWindow):
             x = int(match[:-1])
             ivl = x * 86400
             # max() ensures ivl isnt less than 1 day
-            cur.execute("""UPDATE user_cards SET status = ? due = ?, ivl = ? WHERE id = ?""",
+            cur.execute("""UPDATE user_cards SET status = ?, due = ?, ivl = ? WHERE id = ?""",
                         (2, time() + ivl, max(ivl, 86400), card.id))
             print("x!")
         else:
             # Handle the x case
             x = int(match)
             ivl = x * 86400
-            cur.execute("""UPDATE user_cards SET status = ? due = ? WHERE id = ?""", (2, time() + ivl, card.id))
+            cur.execute("""UPDATE user_cards SET status = ?, due = ? WHERE id = ?""", (2, time() + ivl, card.id))
 
         con.commit()
         cur.close()
@@ -2396,13 +2516,13 @@ class DeleteCard(QDialog):
         self.buttonBox.rejected.connect(self.deleteLater)
 
 
-class AddCard(QMainWindow):
-    def __init__(self, user):
+class AddCard(QWidget):
+    def __init__(self, user, stack):
         self.user = user
         super().__init__()
         loadUi("addcard.ui", self)
 
-        connectmainbuttons(self)
+        connectmainbuttons(self, stack)
 
         self.scrollWidgetContents_layout = QtWidgets.QVBoxLayout(self.scrollAreaWidgetContents)
         self.scrollWidgetContents_layout.setContentsMargins(0, 0, 0, 0)
@@ -2510,9 +2630,8 @@ class AddCard(QMainWindow):
                             VALUES (?, ?, ?, ?, ?) RETURNING id""",
                         (card_data, deck.did, self.template.id, time(), self.user.id))
             cid = cur.fetchone()[0]
-            cur.execute("""INSERT INTO user_cards (uid, cid, ivl, ef, type, status, reps, lapses, odue, left)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                        (self.user.id, cid, None, deck.config.new_init_ef, 0, 0, 0, 0, time(), 0))
+            cur.execute("""INSERT INTO user_cards (uid, cid, ivl, type, status, reps, lapses, odue, left)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""", (self.user.id, cid, None, 0, 0, 0, 0, time(), 0))
 
             try:
                 con.commit()
@@ -3180,8 +3299,8 @@ class AddTemplate(QWidget):
 # be open to any other ideas or suggestions
 
 
-class StatsPage(QMainWindow):
-    def __init__(self, user):
+class StatsPage(QWidget):
+    def __init__(self, user, stack):
         self.statuscolours = ['#6BAED6', '#DF8C50', '#CF6A52', '#84C685', '#48A461']
         self.answercolours = ['#8F0B29', '#D5A365', '#9DBE69', '#0B5E37']
 
@@ -3189,61 +3308,360 @@ class StatsPage(QMainWindow):
         self.deck = None
         super().__init__()
         loadUi("statspage.ui", self)
-        connectmainbuttons(self)
-        self.fetchcardsdata()
+        connectmainbuttons(self, stack)
         labelfont = QFont()
         labelfont.setPointSize(18)
 
         layout = QtWidgets.QVBoxLayout(self.scrollAreaWidgetContents)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setAlignment(Qt.AlignTop)
 
-        # to be moved
+        # should really clear widgets and just refresh the graphs
 
-        todaywidget = self.createtodaywidget()
-        layout.addWidget(todaywidget)
-
-        future = self.createfuturereviewsbar()
-        layout.addWidget(future)
-
-        pastreviews = self.createpastreviewsbar()
-        layout.addWidget(pastreviews)
-
-        piewidget = self.createstatuspie()
-        layout.addWidget(piewidget)
-
-        ivlswidget = self.createintervalsbar()
-        layout.addWidget(ivlswidget)
-
-        answerbar = self.createanswerbuttonsbar()
-        layout.addWidget(answerbar)
-        ###
-
-        layout.addSpacerItem(QSpacerItem(20, 0, QSizePolicy.Minimum, QSizePolicy.MinimumExpanding))
         self.scrollarea.setWidget(self.scrollAreaWidgetContents)
         self.scrollarea.setWidgetResizable(True)
         self.scrollAreaWidgetContents.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.scrollAreaWidgetContents.setLayout(layout)
+        self.scrollAreaWidgetContents.layout().setAlignment(Qt.AlignTop)
 
         self.allcardsbutton.clicked.connect(self.allcardstoggled)
         self.deckbutton.clicked.connect(self.deckbuttontoggled)
         self.decksbox.currentIndexChanged.connect(self.changedeck)
 
+        self.decksbox.currentIndexChanged.connect(self.refreshgraphs)
+
+        self.allcardsbutton.setChecked(True)
+        self.decksbox.setEnabled(False)
+        self.deck = None
+        self.createstatswidgets()
         self.refresh()
 
     def refresh(self):
-        self.allcardsbutton.setChecked(True)
         self.filldecksbox()
-        self.decksbox.setEnabled(False)
-        self.deck = None
-        # call a refresh graphs
-        pass
+        self.refreshgraphs()
+
+    def createstatswidgets(self):
+        buttonfont = QFont()
+        buttonfont.setPointSize(16)
+
+        todaywidget = TodayStatsWidget()
+        self.scrollAreaWidgetContents.layout().addWidget(todaywidget)
+
+        # Creating future due housing widget and elements
+        futuredue = GraphWidget()
+        futuredue.titlelabel.setText("Future Due")
+
+        buttonswidget = QWidget(futuredue.frame)
+        buttonswidget.setObjectName("buttonswidget")
+        buttonslayout = QHBoxLayout()
+
+        onemonth = QRadioButton("1 month", buttonswidget)
+        threemonths = QRadioButton("3 months", buttonswidget)
+        oneyear = QRadioButton("1 year", buttonswidget)
+        all = QRadioButton("all", buttonswidget)
+
+        onemonth.setFont(buttonfont)
+        threemonths.setFont(buttonfont)
+        oneyear.setFont(buttonfont)
+        all.setFont(buttonfont)
+
+        onemonth.setObjectName("onemonth")
+        threemonths.setObjectName("threemonths")
+        oneyear.setObjectName("oneyear")
+        all.setObjectName("all")
+
+        onemonth.clicked.connect(self.refreshfuturereviews)
+        threemonths.clicked.connect(self.refreshfuturereviews)
+        oneyear.clicked.connect(self.refreshfuturereviews)
+        all.clicked.connect(self.refreshfuturereviews)
+
+        futurebuttongroup = QButtonGroup()
+        futurebuttongroup.addButton(onemonth)
+        futurebuttongroup.addButton(threemonths)
+        futurebuttongroup.addButton(oneyear)
+        futurebuttongroup.addButton(all)
+
+        # Set the default checked button
+        onemonth.setChecked(True)
+
+        buttonslayout.addSpacerItem(QSpacerItem(0, 20, QSizePolicy.MinimumExpanding, QSizePolicy.Minimum))
+        buttonslayout.addWidget(onemonth)
+        buttonslayout.addWidget(threemonths)
+        buttonslayout.addWidget(oneyear)
+        buttonslayout.addWidget(all)
+        buttonslayout.addSpacerItem(QSpacerItem(0, 20, QSizePolicy.MinimumExpanding, QSizePolicy.Minimum))
+
+        buttonswidget.setLayout(buttonslayout)
+        futuredue.frame.layout().addWidget(buttonswidget)
+
+        self.scrollAreaWidgetContents.layout().addWidget(futuredue)
+
+        # Past reviews housing widget and elements
+        pastreviews = GraphWidget()
+        pastreviews.titlelabel.setText("Past Reviews")
+
+        buttonswidget = QWidget(futuredue.frame)
+        buttonswidget.setObjectName("buttonswidget")
+        buttonslayout = QHBoxLayout()
+
+        onemonth = QRadioButton("1 month", buttonswidget)
+        threemonths = QRadioButton("3 months", buttonswidget)
+        oneyear = QRadioButton("1 year", buttonswidget)
+
+        onemonth.setFont(buttonfont)
+        threemonths.setFont(buttonfont)
+        oneyear.setFont(buttonfont)
+
+        onemonth.setObjectName("onemonth")
+        threemonths.setObjectName("threemonths")
+        oneyear.setObjectName("oneyear")
+
+        onemonth.clicked.connect(self.refreshpastreviews)
+        threemonths.clicked.connect(self.refreshpastreviews)
+        oneyear.clicked.connect(self.refreshpastreviews)
+
+        pastbuttongroup = QButtonGroup()
+        pastbuttongroup.addButton(onemonth)
+        pastbuttongroup.addButton(threemonths)
+        pastbuttongroup.addButton(oneyear)
+        pastbuttongroup.setExclusive(True)
+
+        onemonth.setChecked(True)
+
+        buttonslayout.addSpacerItem(QSpacerItem(0, 20, QSizePolicy.MinimumExpanding, QSizePolicy.Minimum))
+        buttonslayout.addWidget(onemonth)
+        buttonslayout.addWidget(threemonths)
+        buttonslayout.addWidget(oneyear)
+        buttonslayout.addSpacerItem(QSpacerItem(0, 20, QSizePolicy.MinimumExpanding, QSizePolicy.Minimum))
+
+        buttonswidget.setLayout(buttonslayout)
+        pastreviews.frame.layout().addWidget(buttonswidget)
+
+        self.scrollAreaWidgetContents.layout().addWidget(pastreviews)
+
+        # Cards breakdown
+
+        piewidget = GraphWidget()
+        piewidget.titlelabel.setText("Cards By Status")
+        self.scrollAreaWidgetContents.layout().addWidget(piewidget)
+
+        # ivls widget
+
+        ivlswidget = GraphWidget()
+        ivlswidget.titlelabel.setText("Review Intervals")
+
+        buttonswidget = QWidget(ivlswidget.frame)
+        buttonswidget.setObjectName("buttonswidget")
+        buttonslayout = QHBoxLayout()
+
+        onemonth = QRadioButton("1 month", buttonswidget)
+        half = QRadioButton("50%", buttonswidget)
+        ninety = QRadioButton("90%", buttonswidget)
+        all = QRadioButton("all", buttonswidget)
+
+        onemonth.setFont(buttonfont)
+        half.setFont(buttonfont)
+        ninety.setFont(buttonfont)
+        all.setFont(buttonfont)
+
+        onemonth.setObjectName("onemonth")
+        half.setObjectName("half")
+        ninety.setObjectName("ninety")
+        all.setObjectName("all")
+
+        onemonth.setChecked(True)
+
+        ivlsbuttongroup = QButtonGroup()
+        ivlsbuttongroup.addButton(onemonth)
+        ivlsbuttongroup.addButton(half)
+        ivlsbuttongroup.addButton(ninety)
+        ivlsbuttongroup.addButton(all)
+        ivlsbuttongroup.setExclusive(True)
+
+        onemonth.clicked.connect(self.refreshivlswidget)
+        half.clicked.connect(self.refreshivlswidget)
+        ninety.clicked.connect(self.refreshivlswidget)
+        all.clicked.connect(self.refreshivlswidget)
+
+        buttonslayout.addSpacerItem(QSpacerItem(0, 20, QSizePolicy.MinimumExpanding, QSizePolicy.Minimum))
+        buttonslayout.addWidget(onemonth)
+        buttonslayout.addWidget(half)
+        buttonslayout.addWidget(ninety)
+        buttonslayout.addWidget(all)
+        buttonslayout.addSpacerItem(QSpacerItem(0, 20, QSizePolicy.MinimumExpanding, QSizePolicy.Minimum))
+
+        buttonswidget.setLayout(buttonslayout)
+        ivlswidget.frame.layout().addWidget(buttonswidget)
+
+        self.scrollAreaWidgetContents.layout().addWidget(ivlswidget)
+
+        easewidget = GraphWidget()
+        easewidget.titlelabel.setText("Card Ease")
+        self.scrollAreaWidgetContents.layout().addWidget(easewidget)
+
+        # Answer buttons widget
+
+        answerswidget = GraphWidget()
+        answerswidget.titlelabel.setText("Answer Buttons")
+
+        buttonswidget = QWidget(answerswidget.frame)
+        buttonswidget.setObjectName("buttonswidget")
+        buttonslayout = QHBoxLayout()
+
+        onemonth = QRadioButton("1 month", buttonswidget)
+        threemonths = QRadioButton("3 months", buttonswidget)
+        oneyear = QRadioButton("1 year", buttonswidget)
+        all = QRadioButton("all", buttonswidget)
+
+        onemonth.setFont(buttonfont)
+        threemonths.setFont(buttonfont)
+        oneyear.setFont(buttonfont)
+        all.setFont(buttonfont)
+
+        onemonth.setObjectName("onemonth")
+        threemonths.setObjectName("threemonths")
+        oneyear.setObjectName("oneyear")
+        all.setObjectName("all")
+
+        all.setChecked(True)
+
+        answersbuttongroup = QButtonGroup()
+        answersbuttongroup.addButton(onemonth)
+        answersbuttongroup.addButton(threemonths)
+        answersbuttongroup.addButton(oneyear)
+        answersbuttongroup.addButton(all)
+        answersbuttongroup.setExclusive(True)
+
+        onemonth.clicked.connect(self.refreshanswerwidget)
+        threemonths.clicked.connect(self.refreshanswerwidget)
+        oneyear.clicked.connect(self.refreshanswerwidget)
+        all.clicked.connect(self.refreshanswerwidget)
+
+
+        buttonslayout.addSpacerItem(QSpacerItem(0, 20, QSizePolicy.MinimumExpanding, QSizePolicy.Minimum))
+        buttonslayout.addWidget(onemonth)
+        buttonslayout.addWidget(threemonths)
+        buttonslayout.addWidget(oneyear)
+        buttonslayout.addWidget(all)
+        buttonslayout.addSpacerItem(QSpacerItem(0, 20, QSizePolicy.MinimumExpanding, QSizePolicy.Minimum))
+
+        buttonswidget.setLayout(buttonslayout)
+        answerswidget.frame.layout().addWidget(buttonswidget)
+
+        self.scrollAreaWidgetContents.layout().addWidget(answerswidget)
+
+        # break
+
+        self.scrollAreaWidgetContents.layout().addSpacerItem(QSpacerItem(20, 0, QSizePolicy.Minimum, QSizePolicy.MinimumExpanding))
+
+        self.scrollAreaWidgetContents.layout().setContentsMargins(0, 0, 0, 0)
+
+    def refreshgraphs(self):
+        self.updatetodaywidget(self.scrollAreaWidgetContents.layout().itemAt(0).widget())  # .widget()?
+        self.refreshfuturereviews()
+        self.refreshpastreviews()
+        self.refreshstatuswidget()
+        self.refreshivlswidget()
+        self.refresheasewidget()
+        self.refreshanswerwidget()
+
+    def refreshfuturereviews(self):
+        futurewidget = self.scrollAreaWidgetContents.layout().itemAt(1).widget()
+        buttonswidget = futurewidget.frame.findChild(QWidget, "buttonswidget")
+
+        daysrange = None  # Default value if none of the radio buttons are checked
+        if buttonswidget.findChild(QRadioButton, "onemonth").isChecked():
+            daysrange = 30
+        elif buttonswidget.findChild(QRadioButton, "threemonths").isChecked():
+            daysrange = 90
+        elif buttonswidget.findChild(QRadioButton, "oneyear").isChecked():
+            daysrange = 365
+
+        futuresubwidget = self.createfuturereviewsbar(daysrange)
+        if futurewidget.frame.layout().count() > 3:
+            futurewidget.frame.layout().itemAt(3).widget().deleteLater()
+
+        futurewidget.frame.layout().addWidget(futuresubwidget)
+
+    def refreshpastreviews(self):
+        pastwidget = self.scrollAreaWidgetContents.layout().itemAt(2).widget()
+
+        buttonswidget = pastwidget.frame.findChild(QWidget, "buttonswidget")
+        daysrange = None  # Default value if none of the radio buttons are checked
+        if buttonswidget.findChild(QRadioButton, "onemonth").isChecked():
+            daysrange = 30
+        elif buttonswidget.findChild(QRadioButton, "threemonths").isChecked():
+            daysrange = 90
+        elif buttonswidget.findChild(QRadioButton, "oneyear").isChecked():
+            daysrange = 365
+
+        pastsubwidget = self.createpastreviewsbar(daysrange)
+        if pastwidget.frame.layout().count() > 3:
+            pastwidget.frame.layout().itemAt(3).widget().deleteLater()
+
+        pastwidget.frame.layout().addWidget(pastsubwidget)
+
+    def refreshstatuswidget(self):
+        statuswidget = self.scrollAreaWidgetContents.layout().itemAt(3).widget()
+        statussubwidget = self.createstatuspie()
+
+        if statuswidget.frame.layout().count() > 2:
+            statuswidget.frame.layout().itemAt(2).widget().deleteLater()
+
+        statuswidget.frame.layout().addWidget(statussubwidget)
+
+    def refreshivlswidget(self):
+        ivlswidget = self.scrollAreaWidgetContents.layout().itemAt(4).widget()
+
+        buttonswidget = ivlswidget.frame.findChild(QWidget, "buttonswidget")
+        maxivl = None  # Default value if none of the radio buttons are checked
+        percentage = None
+        if buttonswidget.findChild(QRadioButton, "onemonth").isChecked():
+            maxivl = 31
+        elif buttonswidget.findChild(QRadioButton, "half").isChecked():
+            percentage = 0.5
+        elif buttonswidget.findChild(QRadioButton, "ninety").isChecked():
+            percentage = 0.9
+
+        ivlsubwidget = self.createintervalsbar(maxivl, percentage)
+
+        if ivlswidget.frame.layout().count() > 3:
+            ivlswidget.frame.layout().itemAt(3).widget().deleteLater()
+
+        ivlswidget.frame.layout().addWidget(ivlsubwidget)
+
+    def refresheasewidget(self):
+        easewidget = self.scrollAreaWidgetContents.layout().itemAt(5).widget()
+
+        easesubwidget = self.createeasefactorbar()
+        if easewidget.frame.layout().count() > 2:
+            easewidget.frame.layout().itemAt(2).widget().deleteLater()
+
+        easewidget.frame.layout().addWidget(easesubwidget)
+
+    def refreshanswerwidget(self):
+        answerwidget = self.scrollAreaWidgetContents.layout().itemAt(6).widget()
+
+        buttonswidget = answerwidget.frame.findChild(QWidget, "buttonswidget")
+        daysrange = None  # Default value if none of the radio buttons are checked
+        if buttonswidget.findChild(QRadioButton, "onemonth").isChecked():
+            daysrange = 30
+        elif buttonswidget.findChild(QRadioButton, "threemonths").isChecked():
+            daysrange = 90
+        elif buttonswidget.findChild(QRadioButton, "oneyear").isChecked():
+            daysrange = 365
+
+        answerbar = self.createanswerbuttonsbar(daysrange)
+
+        if answerwidget.frame.layout().count() > 3:
+            answerwidget.frame.layout().itemAt(3).widget().deleteLater()
+
+        answerwidget.frame.layout().addWidget(answerbar)
 
     def allcardstoggled(self):
         if not self.allcardsbutton.isChecked():
             return
         self.decksbox.setEnabled(False)
         self.deck = None
+        self.refreshgraphs()
         # call a refresh graphs
 
     def deckbuttontoggled(self):
@@ -3251,232 +3669,40 @@ class StatsPage(QMainWindow):
             return
         self.decksbox.setEnabled(True)
         self.deck = self.decksbox.currentData()
+        self.refreshgraphs()
         # call a refresh graphs
 
-    def refreshgraphs(self):
-        pass
+    def filldecksbox(self):
+        prevdeck = self.decksbox.currentData()
+
+        self.decksbox.blockSignals(True)
+        self.decksbox.clear()
+        con = sqlite3.connect(database)
+        cur = con.cursor()
+        cur.execute("""SELECT ud.id FROM user_decks ud WHERE ud.uid = ?""", (self.user.id,))
+        try:
+            udids = cur.fetchall()
+        except:
+            udids = []
+            print("no decks exist")
+
+        for udid in udids:
+            deck = Deck(udid[0], self.user)
+            self.decksbox.addItem(deck.name, deck)
+            try:
+                if deck.udid == prevdeck.udid:
+                    self.decksbox.setCurrentIndex(self.decksbox.count() - 1)
+            except AttributeError:
+                pass
+        self.decksbox.blockSignals(False)
 
     def changedeck(self):
         if not self.deckbutton.isChecked():
             return
         self.deck = self.decksbox.currentData()
 
-    def fetchcardsdata(self):
-        con = sqlite3.connect(database)
-        cur = con.cursor()
-        cur.execute(f"""SELECT r.ucid, r.ease, r.ivl, r.lastivl, r.ef, r.lastef,
-         r.status, r.reps, r.lapses, r.time, r.start, r.end
-         FROM revlog r INNER JOIN user_cards uc ON r.ucid = uc.id WHERE uc.uid = ?""", (self.user.id,))
-        self.revsdf = pd.DataFrame(cur.fetchall(),
-                                   columns=['ucid', 'ease', 'ivl', 'lastivl', 'ef', 'lastef',
-                                            'status', 'reps', 'lapses', 'time', 'start', 'end'])
-
-        cur.execute(f"""SELECT cid, ef, ivl, type, status, reps, lapses, due FROM user_cards WHERE uid = ?""",
-                    (self.user.id,))
-
-        self.cardsdf = pd.DataFrame(cur.fetchall(),
-                                    columns=['cid', 'ef', 'ivl', 'type', 'status', 'reps', 'lapses', 'due'])
-        self.cardsdf['due'] = pd.to_datetime(self.cardsdf['due'], unit='s', origin='unix')
-        self.cardsdf['due'] = self.cardsdf['due'].dt.date  # Rounds down due times to the nearest date
-        self.cardsdf['due'] = (self.cardsdf['due'] - datetime.date.today()).dt.days
-
-    def createstatuspie(self):
-        # ideally want to add this into a seperate widget then -> statspage
-        """counts: [new, learning, relearning, young, mature]"""
-        statuses = ['New', 'Learning', 'Relearning', 'Young', 'Mature']
-        con = sqlite3.connect(database)
-        cur = con.cursor()
-        counts = [0] * 5
-        if self.deck:
-            params = [(0, self.user.id, self.deck.id), (1, self.user.id, self.deck.id), (3, self.user.id, self.deck.id)]
-            for i in range(3):
-                cur.execute("""SELECT COUNT (id) FROM user_cards WHERE status = ? AND uid = ? AND deck_id = ?""",
-                            (params[i]))
-                counts[i] = cur.fetchone()[0]
-
-            cur.execute(
-                """SELECT COUNT (id) FROM user_cards WHERE status = ? AND uid = ? AND deck_id = ? AND ivl < ?""",
-                (2, self.user.id, self.deck.id, 30 * 86400))
-            counts[3] = cur.fetchone()[0]
-            cur.execute(
-                """SELECT COUNT (id) FROM user_cards WHERE status = ? AND uid = ? AND deck_id = ? AND ivl >= ?""",
-                (2, self.user.id, self.deck.id, 30 * 86400))
-            counts[4] = cur.fetchone()[0]
-        else:
-            params = [(0, self.user.id), (1, self.user.id), (3, self.user.id)]
-            for i in range(3):
-                cur.execute("""SELECT COUNT (id) FROM user_cards WHERE status = ? AND uid = ?""",
-                            (params[i]))
-                counts[i] = cur.fetchone()[0]
-
-            cur.execute(
-                """SELECT COUNT (id) FROM user_cards WHERE status = ? AND uid = ? AND ivl < ?""",
-                (2, self.user.id, 30 * 86400))
-            counts[3] = cur.fetchone()[0]
-            cur.execute(
-                """SELECT COUNT (id) FROM user_cards WHERE status = ? AND uid = ? AND ivl >= ?""",
-                (2, self.user.id, 30 * 86400))
-            counts[4] = cur.fetchone()[0]
-
-        cleaned_counts = []
-        cleaned_colours = []
-        cleaned_statuses = []
-        explode = []
-        explodefloat = 0
-        for i in range(5):
-            if counts[i] != 0:
-                cleaned_counts.append(counts[i])
-                cleaned_colours.append(self.statuscolours[i])
-                cleaned_statuses.append(statuses[i])
-                explode.append(explodefloat)
-
-        canvas = MplCanvas(self, width=4, height=4, dpi=100)
-        # labels=cleaned_statuses, autopct=lambda p: '{:.0f}'.format(p * sum(counts) / 100), pctdistance=0.85,
-        canvas.axes.pie(cleaned_counts, colors=cleaned_colours, explode=explode, startangle=90)
-        canvas.axes.set_facecolor('#363636')
-        canvas.fig.set_facecolor('#363636')
-
-        canvas.fig.subplots_adjust(left=-0.05, right=1.05, bottom=-0.05, top=1.05)
-
-        # center_circle = mpatches.Circle((0, 0), 0.7, color='#363636')
-        # canvas.axes.add_artist(center_circle)
-        canvas.setSizePolicy(QSizePolicy.MinimumExpanding, QSizePolicy.Minimum)
-
-        piewidget = GraphWidget()
-        piewidget.titlelabel.setText("Cards By Status")
-
-        subwidget = QWidget()
-        layout = QHBoxLayout()
-        subwidget.setLayout(layout)
-        layout.addWidget(canvas)
-
-        textwidget = QWidget()
-        textlayout = QGridLayout()
-        textwidget.setLayout(textlayout)
-
-        font = QFont()
-        font.setPointSize(15)
-
-        # statuses = ['New', 'Learning', 'Relearning', 'Young', 'Mature']
-
-        newlabel = QLabel("New")
-        newlabel.setStyleSheet(f"color:{self.statuscolours[0]}")
-        newlabel.setAlignment(Qt.AlignLeft)
-        newlabel.setFont(font)
-
-        newcount = QLabel(f"{counts[0]}")
-        newcount.setAlignment(Qt.AlignRight)
-        newcount.setFont(font)
-
-        learninglabel = QLabel("Learning")
-        learninglabel.setStyleSheet(f"color:{self.statuscolours[1]}")
-        learninglabel.setAlignment(Qt.AlignLeft)
-        learninglabel.setFont(font)
-
-        learningcount = QLabel(f"{counts[1]}")
-        learningcount.setAlignment(Qt.AlignRight)
-        learningcount.setFont(font)
-
-        relearninglabel = QLabel("Relearning")
-        relearninglabel.setStyleSheet(f"color:{self.statuscolours[2]}")
-        relearninglabel.setMinimumSize(140, 0)
-        relearninglabel.setAlignment(Qt.AlignLeft)
-        relearninglabel.setFont(font)
-
-        relearningcount = QLabel(f"{counts[2]}")
-        relearningcount.setAlignment(Qt.AlignRight)
-        relearningcount.setFont(font)
-
-        younglabel = QLabel("Young")
-        younglabel.setStyleSheet(f"color:{self.statuscolours[3]}")
-        younglabel.setAlignment(Qt.AlignLeft)
-        younglabel.setFont(font)
-
-        youngcount = QLabel(f"{counts[3]}")
-        youngcount.setAlignment(Qt.AlignRight)
-        youngcount.setFont(font)
-
-        maturelabel = QLabel("Mature")
-        maturelabel.setStyleSheet(f"color:{self.statuscolours[4]}")
-        maturelabel.setAlignment(Qt.AlignLeft)
-        maturelabel.setFont(font)
-
-        maturecount = QLabel(f"{counts[4]}")
-        maturecount.setAlignment(Qt.AlignRight)
-        maturecount.setFont(font)
-
-        totallabel = QLabel("Total")
-        totallabel.setAlignment(Qt.AlignLeft)
-        totallabel.setFont(font)
-
-        totalcount = QLabel(f"{sum(counts)}")
-        totalcount.setAlignment(Qt.AlignRight)
-        totalcount.setFont(font)
-
-        # calculate percentage of cards for each status
-        new_percentage = round(counts[0] / sum(counts) * 100, 1)
-        learning_percentage = round(counts[1] / sum(counts) * 100, 1)
-        relearning_percentage = round(counts[2] / sum(counts) * 100, 1)
-        young_percentage = round(counts[3] / sum(counts) * 100, 1)
-        mature_percentage = round(counts[4] / sum(counts) * 100, 1)
-
-        # create labels for each status with percentage counts
-        newpct = QLabel(f"({new_percentage}%)")
-        newpct.setAlignment(Qt.AlignRight)
-        newpct.setFont(font)
-
-        learningpct = QLabel(f"({learning_percentage}%)")
-        learningpct.setAlignment(Qt.AlignRight)
-        learningpct.setFont(font)
-
-        relearningpct = QLabel(f"({relearning_percentage}%)")
-        relearningpct.setAlignment(Qt.AlignRight)
-        relearningpct.setFont(font)
-
-        youngpct = QLabel(f"({young_percentage}%)")
-        youngpct.setAlignment(Qt.AlignRight)
-        youngpct.setFont(font)
-
-        maturepct = QLabel(f"({mature_percentage}%)")
-        maturepct.setAlignment(Qt.AlignRight)
-        maturepct.setFont(font)
-        maturepct.setMinimumSize(80, 0)
-
-        # textlayout.addSpacerItem(QSpacerItem(20, 0, QSizePolicy.Minimum, QSizePolicy.Expanding), 0, 0)
-        textlayout.addWidget(newlabel, 1, 0)
-        textlayout.addWidget(newcount, 1, 1)
-        textlayout.addWidget(newpct, 1, 2)
-        textlayout.addWidget(learninglabel, 2, 0)
-        textlayout.addWidget(learningcount, 2, 1)
-        textlayout.addWidget(learningpct, 2, 2)
-        textlayout.addWidget(relearninglabel, 3, 0)
-        textlayout.addWidget(relearningcount, 3, 1)
-        textlayout.addWidget(relearningpct, 3, 2)
-        textlayout.addWidget(younglabel, 4, 0)
-        textlayout.addWidget(youngcount, 4, 1)
-        textlayout.addWidget(youngpct, 4, 2)
-        textlayout.addWidget(maturelabel, 5, 0)
-        textlayout.addWidget(maturecount, 5, 1)
-        textlayout.addWidget(maturepct, 5, 2)
-        textlayout.addWidget(totallabel, 6, 0)
-        textlayout.addWidget(totalcount, 6, 1)
-
-        # textlayout.addSpacerItem(QSpacerItem(20, 0, QSizePolicy.Minimum, QSizePolicy.Expanding), 6, 0)
-
-        textlayout.setRowStretch(0, 1)
-        textlayout.setRowStretch(6, 1)
-        textlayout.setColumnStretch(3, 1)
-
-        layout.addWidget(textwidget)
-
-        piewidget.frame.layout().addWidget(subwidget)
-
-        # come back to here to add text stuff
-
-        return piewidget
-
-    def createtodaywidget(self):
-        todaywidget = TodayStatsWidget()
+    def updatetodaywidget(self, widget):
+        todaywidget = widget
         con = sqlite3.connect(database)
         cur = con.cursor()
         # self.deck = self.decksbox.currentData()
@@ -3632,46 +3858,209 @@ class StatsPage(QMainWindow):
 
         return todaywidget
 
-    def statuscount(self, status, cur):
-        if self.deck:
-            cur.execute(f"""SELECT COUNT (r.id) FROM revlog r
-                        INNER JOIN user_cards uc ON r.ucid = uc.id
-                        INNER JOIN cards c on uc.cid = c.id
-                        WHERE uc.uid = ? 
-                        AND c.deck_id = ?
-                        AND r.status = ?
-                        AND (r.time >= {math.floor(time() / 86400) * 86400}
-                        AND r.time <= {math.ceil(time() / 86400) * 86400})""",
-                        (self.user.id, self.deck.did, status))
-        else:
-            cur.execute(f"""SELECT COUNT (r.id) FROM revlog r
-                            INNER JOIN user_cards uc ON r.ucid = uc.id
-                            WHERE uc.uid = ? 
-                            AND r.status = ?
-                            AND (r.time >= {math.floor(time() / 86400) * 86400}
-                            AND r.time <= {math.ceil(time() / 86400) * 86400})""",
-                        (self.user.id, status))
+    def createfuturereviewsbar(self, daysrange):
+        # todo configuration of this - perhaps allow for showing overdue if they exist.
+        today = datetime.date.today()
+        todayend = int(mktime(today.timetuple())) + 86400
 
-        return cur.fetchone()[0]
-
-    def filldecksbox(self):
-        self.decksbox.clear()
         con = sqlite3.connect(database)
         cur = con.cursor()
-        cur.execute("""SELECT ud.id FROM user_decks ud WHERE ud.uid = ?""", (self.user.id,))
-        try:
-            udids = cur.fetchall()
-        except:
-            udids = []
-            print("no decks exist")
 
-        for udid in udids:
-            deck = Deck(udid[0], self.user)
-            self.decksbox.addItem(deck.name, deck)
+        if self.deck:
+            if daysrange:
+                cur.execute(f"""SELECT uc.id, uc.due FROM user_cards uc
+                INNER JOIN cards c ON uc.cid = c.id
+                INNER JOIN decks d on c.deck_id = d.id
+                WHERE uc.uid = ?
+                AND d.id = ?
+                AND uc.due <= ?""",
+                            (self.user.id, self.deck.did, todayend + daysrange * 86400))
+            else:
+                cur.execute(f"""SELECT uc.id, uc.due FROM user_cards uc
+                                INNER JOIN cards c ON uc.cid = c.id
+                                INNER JOIN decks d on c.deck_id = d.id
+                                WHERE uc.uid = ?
+                                AND d.id = ?""",
+                            (self.user.id, self.deck.did))
 
-    def createpastreviewsbar(self):
-        daysrange = 30
-        # get day range
+        else:
+            if daysrange:
+                cur.execute(f"""SELECT uc.id, uc.due FROM user_cards uc
+                                INNER JOIN cards c ON uc.cid = c.id
+                                INNER JOIN decks d on c.deck_id = d.id
+                                WHERE uc.uid = ?
+                                AND uc.due <= ?""",
+                            (self.user.id, todayend + daysrange * 86400))
+            else:
+                cur.execute(f"""SELECT uc.id, uc.due FROM user_cards uc
+                                            INNER JOIN cards c ON uc.cid = c.id
+                                            INNER JOIN decks d on c.deck_id = d.id
+                                            WHERE uc.uid = ?""",
+                            (self.user.id,))
+
+        duesdf = pd.DataFrame(cur.fetchall(), columns=['id', 'due'])
+
+        if duesdf['due'].empty:
+            nodata = QLabel("No Data")
+            font = QFont()
+            font.setPointSize(24)
+            nodata.setFont(font)
+            nodata.setStyleSheet("color:#8c8c8c;")
+            nodata.setAlignment(Qt.AlignCenter)
+            nodata.setMinimumSize(0, 300)
+            return nodata
+
+
+        cur.close()
+        con.close()
+
+        today = datetime.date.today()
+        today_datetime = datetime.datetime.combine(today, datetime.datetime.min.time())
+
+        duesdf['due'] = pd.to_datetime(duesdf['due'], unit='s', origin='unix')
+        duesdf['due'] = duesdf['due'].dt.date
+        duesdf['due'] = pd.to_datetime(duesdf['due'])
+        duesdf['due'] = (duesdf['due'] - today_datetime).dt.days
+
+        canvas = MplCanvas(self, width=5, height=4, dpi=100)
+        canvas.setSizePolicy(QSizePolicy.MinimumExpanding, QSizePolicy.Minimum)
+
+        due_counts = duesdf.groupby(['due']).size().reset_index(name='count')
+        due_counts['due'] = due_counts['due'].astype(int)
+
+        if daysrange:
+            for i in range(daysrange + 1):
+                count = due_counts.loc[due_counts['due'] == i]
+                if count.empty:
+                    due_counts.loc[len(due_counts)] = [i, 0]
+        else:
+            for i in range(max(due_counts['due']) + 1):
+                count = due_counts.loc[due_counts['due'] == i]
+                if count.empty:
+                    due_counts.loc[len(due_counts)] = [i, 0]
+
+        due_counts = due_counts[due_counts['due'] >= 0]
+        due_counts = due_counts.sort_values(by=['due']).reset_index(drop=True)
+
+        canvas.axes.bar(due_counts['due'], due_counts['count'], color=self.statuscolours[3], alpha=1)
+        canvas.axes.yaxis.set_major_locator(ticker.MaxNLocator(integer=True))
+        # canvas.axes.set_xlabel('Due')
+        ax2 = canvas.axes.twinx()
+
+        ax2.plot(due_counts['due'], due_counts['count'].cumsum(), c='#a6a6a6', lw=0.2)
+        ax2.fill_between(due_counts['due'], due_counts['count'].cumsum(), 0, alpha=0.1, color='#8C8C8C')
+        ax2.set_ylim(0, max(due_counts['count'].cumsum()))
+        ax2.set_ylim(bottom=0)
+        ax2.yaxis.set_major_locator(ticker.MaxNLocator(integer=True))
+
+        if daysrange:
+            canvas.axes.set_xlim(right=daysrange + 0.5, left=-0.5)
+        else:
+            canvas.axes.set_xlim(right=max(due_counts['due'] + 0.5), left=-0.5)
+
+        ax3 = canvas.axes.twinx()
+
+        ax3.bar(range(max(due_counts['due']) + 1), max(due_counts['count']), color='white', alpha=0)
+        ax3.get_yaxis().set_ticks([])
+
+        canvas.axes.spines[['top']].set_visible(False)
+        ax2.spines[['top', 'bottom', 'left', 'right']].set_visible(False)
+        ax3.spines[['top', 'left', 'bottom', 'right']].set_visible(False)
+
+        canvas.axes.spines[['left', 'bottom', 'right']].set_color('#8C8C8C')
+
+        canvas.axes.tick_params(colors='#8C8C8C')
+        ax2.tick_params(colors='#8C8C8C')
+        ax3.tick_params(colors='#8C8C8C')
+
+        canvas.axes.set_facecolor('#363636')
+        canvas.fig.set_facecolor('#363636')
+
+        canvas.setSizePolicy(QSizePolicy.MinimumExpanding, QSizePolicy.Minimum)
+
+        cursor = mplcursors.cursor(ax3, hover=mplcursors.HoverMode.Transient)
+
+        @cursor.connect("add")
+        def on_add(sel):
+            sel.annotation.get_bbox_patch().set(fc="white")
+            sel.annotation.arrow_patch.set(arrowstyle="simple", fc="white", alpha=0)
+            sel.annotation.set_fontsize(9)
+            index = sel.index
+            days = due_counts.iloc[index]["due"]
+            if days == 0:
+                daystext = "Today"
+            elif days == 1:
+                daystext = "Tomorrow"
+            else:
+                daystext = f"In {days} days:"
+            count = due_counts.iloc[index]["count"]
+            if count == 1:
+                cardsdue = f"{count} card due"
+            else:
+                cardsdue = f"{count} cards due"
+            cumulative = due_counts['count'].cumsum()[index]
+
+            sel.annotation.set_text(f"{daystext}\n{cardsdue}\nRunning Total: {cumulative}")
+            x, y, width, height = sel.artist[sel.index].get_bbox().bounds
+            sel.annotation.xy = (x + width / 2, y + height)
+            sel.artist[sel.index].set_alpha(0.1)
+
+        @cursor.connect("remove")
+        def on_remove(sel):
+            sel.artist[sel.index].set_alpha(0)
+            for sel in cursor.selections:
+                sel.artist[sel.index].set_alpha(0.1)
+
+        font = QFont()
+        font.setPointSize(15)
+
+        # total, avg, due tmrw
+        textwidget = QWidget()
+        textlayout = QGridLayout()
+        textwidget.setLayout(textlayout)
+
+        totalreviewslabel = QLabel("Total:")
+        totalreviewslabel.setAlignment(Qt.AlignRight)
+        totalreviewslabel.setFont(font)
+
+        totalreviewsstat = QLabel(f"{sum(due_counts['count'])} reviews")
+        totalreviewsstat.setAlignment(Qt.AlignLeft)
+        totalreviewsstat.setFont(font)
+
+        avglabel = QLabel("Average:")
+        avglabel.setAlignment(Qt.AlignRight)
+        avglabel.setFont(font)
+
+        avgstat = QLabel(f"{int(round(sum(due_counts['count']) / (max(due_counts['due']) + 1), 0))} reviews/day")
+        avgstat.setAlignment(Qt.AlignLeft)
+        avgstat.setFont(font)
+
+        tmrwlabel = QLabel("Due Tomorrow:")
+        tmrwlabel.setAlignment(Qt.AlignRight)
+        tmrwlabel.setFont(font)
+
+        tmrwstat = QLabel(f"{due_counts.iloc[1]['count']} reviews")
+        tmrwstat.setAlignment(Qt.AlignLeft)
+        tmrwstat.setFont(font)
+
+        textlayout.addWidget(totalreviewslabel, 0, 0)
+        textlayout.addWidget(totalreviewsstat, 0, 1)
+        textlayout.addWidget(avglabel, 1, 0)
+        textlayout.addWidget(avgstat, 1, 1)
+        textlayout.addWidget(tmrwlabel, 2, 0)
+        textlayout.addWidget(tmrwstat, 2, 1)
+
+        subwidget = QWidget()
+        sublayout = QVBoxLayout()
+        subwidget.setLayout(sublayout)
+        sublayout.addWidget(canvas)
+        sublayout.addWidget(textwidget)
+
+        return subwidget
+
+    def createpastreviewsbar(self, daysrange):
+        group_size = math.ceil(daysrange / 90)
+        num_groups = math.ceil(daysrange / group_size)
 
         today = datetime.date.today()
         todaytimestamp = int(mktime(today.timetuple()))
@@ -3681,6 +4070,13 @@ class StatsPage(QMainWindow):
             daystart = todaytimestamp - (i + 1) * 86400
             daystarts.append(daystart)
             days_x.append(-(i + 1))
+
+        # results in a whole number of groups
+        while len(daystarts) % group_size != 0:
+            daystarts.append(min(daystarts) - 86400)
+            days_x.append(min(days_x) - 1)
+            pass
+
         daystarts.reverse()
         days_x.reverse()
 
@@ -3738,35 +4134,66 @@ class StatsPage(QMainWindow):
             relearning.append(relearningcount)
             new.append(newcount)
 
+        if all(x == 0 for x in mature + young + learning + relearning + new):
+            nodata = QLabel("No Data")
+            font = QFont()
+            font.setPointSize(24)
+            nodata.setFont(font)
+            nodata.setStyleSheet("color:#8c8c8c;")
+            nodata.setAlignment(Qt.AlignCenter)
+            nodata.setMinimumSize(0, 300)
+            return nodata
+
         cur.close()
         con.close()
 
-        revsum = np.array([sum(i) for i in zip(mature, young, relearning, learning, new)])
-        cumulative = np.cumsum(revsum)
+        days_x.reverse()
+        mature.reverse()
+        young.reverse()
+        learning.reverse()
+        relearning.reverse()
+        new.reverse()
+
+        groups = [days_x[i] - group_size for i in range(0, daysrange + 1, group_size)]
+        mature = [sum(mature[i:i+group_size]) for i in range(0, daysrange + 1, group_size)]
+        young = [sum(young[i:i+group_size]) for i in range(0, daysrange + 1, group_size)]
+        learning = [sum(learning[i:i+group_size]) for i in range(0, daysrange + 1, group_size)]
+        relearning = [sum(relearning[i:i+group_size]) for i in range(0, daysrange + 1, group_size)]
+        new = [sum(new[i:i+group_size]) for i in range(0, daysrange + 1, group_size)]
 
         canvas = MplCanvas(self, width=5, height=4, dpi=100)
 
-        # Plot the bars for each pair of values
+        canvas.axes.bar(groups, mature, color=self.statuscolours[4], label='Mature', width=group_size * 0.9,
+                        align='edge')
+        canvas.axes.bar(groups, young, color=self.statuscolours[3], bottom=mature, label='Young',
+                        width=group_size * 0.9, align='edge')
+        canvas.axes.bar(groups, relearning, color=self.statuscolours[2], align='edge',
+                        bottom=[i + j for i, j in zip(young, mature)], label='relearning', width=group_size * 0.9)
+        canvas.axes.bar(groups, learning, color=self.statuscolours[1], align='edge',
+                        bottom=[i + j + k for i, j, k in zip(young, mature, relearning)],
+                        label='learning', width=group_size * 0.9)
+        canvas.axes.bar(groups, new, color=self.statuscolours[0], align='edge',
+                        bottom=[i + j + k + l for i, j, k, l in zip(young, mature, relearning, learning)],
+                        label='new', width=group_size * 0.9)
 
-        canvas.axes.bar(days_x, mature, color=self.statuscolours[4], label='Mature')
-        canvas.axes.bar(days_x, young, color=self.statuscolours[3], bottom=mature, label='Young')
-        canvas.axes.bar(days_x, relearning, color=self.statuscolours[2],
-                        bottom=[i + j for i, j in zip(young, mature)], label='relearning')
-        canvas.axes.bar(days_x, learning, color=self.statuscolours[1],
-                        bottom=[i + j + k for i, j, k in zip(young, mature, relearning)], label='learning')
-        canvas.axes.bar(days_x, new, color=self.statuscolours[0],
-                        bottom=[i + j + k + l for i, j, k, l in zip(young, mature, relearning, learning)], label='new')
+        canvas.axes.yaxis.set_major_locator(ticker.MaxNLocator(integer=True))
 
+        revsum = np.array([sum(i) for i in zip(mature, young, relearning, learning, new)])
+        revsum = np.flip(revsum)
+        cumulative = np.cumsum(revsum)
+
+        reversed_groups = [groups[i] for i in reversed(range(len(groups)))]
         ax2 = canvas.axes.twinx()
-        ax2.plot(days_x, cumulative, c='#646464', lw=0.2)  # work out ways to display this better
-        ax2.fill_between(days_x, cumulative, 0, alpha=0.1, color='#8C8C8C')
-
+        ax2.plot([x + group_size/2 for x in reversed_groups], cumulative, c='#a6a6a6', lw=0.2)
+        ax2.fill_between([x + group_size/2 for x in reversed_groups], cumulative, 0, alpha=0.1, color='#8C8C8C')
         ax2.set_ylim(bottom=0)
-        canvas.axes.set_xlim(right=0.5, left=days_x[0]-0.5)
+        ax2.yaxis.set_major_locator(ticker.MaxNLocator(integer=True))
+
+        canvas.axes.set_xlim(right=0, left=min(groups))
 
         ax3 = canvas.axes.twinx()
 
-        ax3.bar(days_x, max(revsum), color='white', alpha=0)
+        ax3.bar(groups, max(revsum), color='white', alpha=0, width=group_size * 0.9, align='edge')
         ax3.get_yaxis().set_ticks([])
 
         canvas.axes.spines[['top']].set_visible(False)
@@ -3786,25 +4213,38 @@ class StatsPage(QMainWindow):
             sel.annotation.get_bbox_patch().set(fc="white")
             sel.annotation.arrow_patch.set(arrowstyle="simple", fc="white", alpha=0)
             sel.annotation.set_fontsize(9)
-            index = sel.target.index
+            index = sel.index
             mature_val = mature[index]
             young_val = young[index]
             relearning_val = relearning[index]
             learning_val = learning[index]
             new_val = new[index]
-            running_val = cumulative[index]
-            days_ago = - days_x[index]  # assumes the plot shows the last 7 days
+            running_val = cumulative[len(cumulative) - 1 - index]
+
+            if group_size == 1:
+                days_ago = -groups[index] - group_size
+                if days_ago == 0:
+                    daystext = f"Today"
+                elif days_ago == 1:
+                    daystext = f"Yesterday"
+                else:
+                    daystext = f"{days_ago} days ago"
+            else:
+                earliest = -groups[index] - group_size
+                latest = -groups[index] - 1
+                daystext = f"{earliest}-{latest} days ago"
+
             sel.annotation.set_text(
-                f"Days ago: {days_ago}\nMature: {mature_val}\nYoung: {young_val}\nRelearning: {relearning_val}\nLearning: {learning_val}\nNew: {new_val}\nRunning Total: {running_val}")
-            x, y, width, height = sel.artist[sel.target.index].get_bbox().bounds
+                f"{daystext}\nMature: {mature_val}\nYoung: {young_val}\nRelearning: {relearning_val}\nLearning: {learning_val}\nNew: {new_val}\nRunning Total: {running_val}")
+            x, y, width, height = sel.artist[sel.index].get_bbox().bounds
             sel.annotation.xy = (x + width / 2, y + height)
-            sel.artist[sel.target.index].set_alpha(0.1)
+            sel.artist[sel.index].set_alpha(0.1)
 
         @cursor.connect("remove")
         def on_remove(sel):
-            sel.artist[sel.target.index].set_alpha(0)
+            sel.artist[sel.index].set_alpha(0)
             for sel in cursor.selections:
-                sel.artist[sel.target.index].set_alpha(0.1)
+                sel.artist[sel.index].set_alpha(0.1)
 
         # Add a legend
         # canvas.axes.legend()
@@ -3814,9 +4254,6 @@ class StatsPage(QMainWindow):
 
         canvas.setSizePolicy(QSizePolicy.MinimumExpanding, QSizePolicy.Minimum)
 
-        reviewswidget = GraphWidget()
-        reviewswidget.titlelabel.setText("Past Reviews")
-        reviewswidget.frame.layout().addWidget(canvas)
         font = QFont()
         font.setPointSize(15)
         # adding stats for days studied, total reviews, avg for days studied, avg over period.
@@ -3829,7 +4266,8 @@ class StatsPage(QMainWindow):
         daysstudiedlabel.setAlignment(Qt.AlignRight)
         daysstudiedlabel.setFont(font)
 
-        daysstudiedstat = QLabel(f"{daysstudied} of {daysrange + 1} ({'{:,.0%}'.format(daysstudied / (daysrange + 1))})")
+        daysstudiedstat = QLabel(
+            f"{daysstudied} of {daysrange + 1} ({'{:,.0%}'.format(daysstudied / (daysrange + 1))})")
         daysstudiedstat.setAlignment(Qt.AlignLeft)
         daysstudiedstat.setFont(font)
 
@@ -3845,7 +4283,7 @@ class StatsPage(QMainWindow):
         avgdaysstudiedlabel.setAlignment(Qt.AlignRight)
         avgdaysstudiedlabel.setFont(font)
 
-        avgdaysstudiedstat = QLabel(f"{int(round(sum(revsum)/daysstudied, 0))} reviews/day")
+        avgdaysstudiedstat = QLabel(f"{int(round(sum(revsum) / daysstudied, 0))} reviews/day")
         avgdaysstudiedstat.setAlignment(Qt.AlignLeft)
         avgdaysstudiedstat.setFont(font)
 
@@ -3853,7 +4291,7 @@ class StatsPage(QMainWindow):
         avgperiodlabel.setAlignment(Qt.AlignRight)
         avgperiodlabel.setFont(font)
 
-        avgperiodstat = QLabel(f"{int(round(sum(revsum)/(daysrange + 1), 0))} reviews/day")
+        avgperiodstat = QLabel(f"{int(round(sum(revsum) / (daysrange + 1), 0))} reviews/day")
         avgperiodstat.setAlignment(Qt.AlignLeft)
         avgperiodstat.setFont(font)
 
@@ -3866,212 +4304,324 @@ class StatsPage(QMainWindow):
         textlayout.addWidget(avgperiodlabel, 3, 0)
         textlayout.addWidget(avgperiodstat, 3, 1)
 
-        reviewswidget.frame.layout().addWidget(textwidget)
-
         # todo - will need to create widget outside of the scope of this function in order to use time frame buttons,
         #  and just regenerate graph/text
 
-        return reviewswidget
+        subwidget = QWidget()
+        sublayout = QVBoxLayout()
+        subwidget.setLayout(sublayout)
+        sublayout.addWidget(canvas)
+        sublayout.addWidget(textwidget)
 
-    def createfuturereviewsbar(self):
-        daysrange = 30
-        today = datetime.date.today()
-        todayend = int(mktime(today.timetuple())) + 86400
+        return subwidget
 
+    def createstatuspie(self):
+        # ideally want to add this into a seperate widget then -> statspage
+        """counts: [new, learning, relearning, young, mature]"""
+        statuses = ['New', 'Learning', 'Relearning', 'Young', 'Mature']
         con = sqlite3.connect(database)
         cur = con.cursor()
-
+        counts = [0] * 5
         if self.deck:
-            if daysrange:
-                cur.execute(f"""SELECT uc.id, uc.due FROM user_cards uc
+            params = [(0, self.user.id, self.deck.did), (1, self.user.id, self.deck.did), (3, self.user.id, self.deck.did)]
+            for i in range(3):
+                cur.execute("""SELECT COUNT(DISTINCT uc.id) FROM user_cards uc
                 INNER JOIN cards c ON uc.cid = c.id
-                INNER JOIN decks d on c.deck_id = d.id
-                WHERE uc.uid = ?
-                AND deck.id = ?
-                AND uc.due <= ?""",
-                            (self.user.id, self.deck.did, todayend + daysrange * 86400))
-            else:
-                cur.execute(f"""SELECT uc.id, uc.due FROM user_cards uc
-                                INNER JOIN cards c ON uc.cid = c.id
-                                INNER JOIN decks d on c.deck_id = d.id
-                                WHERE uc.uid = ?
-                                AND deck.id = ?""",
-                            (self.user.id, self.deck.did))
+                WHERE uc.status = ? 
+                AND uc.uid = ? 
+                AND c.deck_id = ?""",
+                            (params[i]))
+                counts[i] = cur.fetchone()[0]
 
+            cur.execute(
+                """SELECT COUNT(DISTINCT uc.id) FROM user_cards uc
+                 INNER JOIN cards c ON uc.cid = c.id
+                 WHERE uc.status = ?
+                  AND uc.uid = ? 
+                  AND c.deck_id = ? 
+                  AND uc.ivl < ?""",
+                (2, self.user.id, self.deck.did, 30 * 86400))
+            counts[3] = cur.fetchone()[0]
+            cur.execute(
+                """SELECT COUNT(DISTINCT uc.id) FROM user_cards uc
+                 INNER JOIN cards c ON uc.cid = c.id
+                 WHERE uc.status = ?
+                 AND uc.uid = ? 
+                 AND c.deck_id = ? 
+                 AND uc.ivl >= ?""",
+                (2, self.user.id, self.deck.did, 30 * 86400))
+            counts[4] = cur.fetchone()[0]
         else:
-            if daysrange:
-                cur.execute(f"""SELECT uc.id, uc.due FROM user_cards uc
-                                INNER JOIN cards c ON uc.cid = c.id
-                                INNER JOIN decks d on c.deck_id = d.id
-                                WHERE uc.uid = ?
-                                AND uc.due <= ?""",
-                            (self.user.id, todayend + daysrange * 86400))
-            else:
-                cur.execute(f"""SELECT uc.id, uc.due FROM user_cards uc
-                                            INNER JOIN cards c ON uc.cid = c.id
-                                            INNER JOIN decks d on c.deck_id = d.id
-                                            WHERE uc.uid = ?""",
-                            (self.user.id,))
+            params = [(0, self.user.id), (1, self.user.id), (3, self.user.id)]
+            for i in range(3):
+                cur.execute("""SELECT COUNT(DISTINCT id) FROM user_cards WHERE status = ? AND uid = ?""",
+                            (params[i]))
+                counts[i] = cur.fetchone()[0]
 
-        duesdf = pd.DataFrame(cur.fetchall(), columns=['id', 'due'])
+            cur.execute(
+                """SELECT COUNT(DISTINCT id) FROM user_cards WHERE status = ? AND uid = ? AND ivl < ?""",
+                (2, self.user.id, 30 * 86400))
+            counts[3] = cur.fetchone()[0]
+            cur.execute(
+                """SELECT COUNT(DISTINCT id) FROM user_cards WHERE status = ? AND uid = ? AND ivl >= ?""",
+                (2, self.user.id, 30 * 86400))
+            counts[4] = cur.fetchone()[0]
 
-        cur.close()
-        con.close()
+        cleaned_counts = []
+        cleaned_colours = []
+        cleaned_statuses = []
+        explode = []
+        explodefloat = 0
+        for i in range(5):
+            if counts[i] != 0:
+                cleaned_counts.append(counts[i])
+                cleaned_colours.append(self.statuscolours[i])
+                cleaned_statuses.append(statuses[i])
+                explode.append(explodefloat)
 
-        duesdf['due'] = pd.to_datetime(duesdf['due'], unit='s', origin='unix')
-        duesdf['due'] = duesdf['due'].dt.date  # Rounds down due times to the nearest date
-        duesdf['due'] = (duesdf['due'] - datetime.date.today()).dt.days
-
-        canvas = MplCanvas(self, width=5, height=4, dpi=100)
-        canvas.setSizePolicy(QSizePolicy.MinimumExpanding, QSizePolicy.Minimum)
-
-        due_counts = duesdf.groupby(['due']).size().reset_index(name='count')
-        for i in range(daysrange + 1):
-            count = due_counts.loc[due_counts['due'] == i]
-            if count.empty:
-                due_counts.loc[len(due_counts)] = [i, 0]
-        due_counts = due_counts[due_counts['due'] >= 0]
-        due_counts = due_counts.sort_values(by=['due']).reset_index(drop=True)
-
-        print(due_counts)
-
-        canvas.axes.bar(due_counts['due'], due_counts['count'], color=self.statuscolours[3], alpha=1)
-        canvas.axes.yaxis.set_major_locator(ticker.MaxNLocator(integer=True))
-        # canvas.axes.set_xlabel('Due')
-        ax2 = canvas.axes.twinx()
-
-        # cumsum_x = np.linspace(min(due_counts['due']), max(due_counts['due']), 200)
-        # plotcumsum = np.interp(cumsum_x, due_counts['due'], due_counts['count'].cumsum())
-        # todo work out how to smooth the cumulative sum curve
-
-        ax2.plot(due_counts['due'], due_counts['count'].cumsum(), c='#646464')
-        ax2.fill_between(due_counts['due'], due_counts['count'].cumsum(), 0, alpha=0.1, color='#8C8C8C')
-        ax2.set_ylim(0, max(due_counts['count'].cumsum()) + 0.5)
-        ax2.set_ylim(bottom=0)
-
-        if daysrange:
-            canvas.axes.set_xlim(right=daysrange + 0.5, left=-0.5)
-        else:
-            canvas.axes.set_xlim(right=max(due_counts['count'] + 0.5), left=-0.5)
-
-        ax3 = canvas.axes.twinx()
-        ax3.bar(range(daysrange + 1), max(due_counts['count']), color='white', alpha=0)
-        ax3.get_yaxis().set_ticks([])
-
-        canvas.axes.spines[['top']].set_visible(False)
-        ax2.spines[['top', 'bottom', 'left', 'right']].set_visible(False)
-        ax3.spines[['top', 'left', 'bottom', 'right']].set_visible(False)
-
-        canvas.axes.spines[['left', 'bottom', 'right']].set_color('#8C8C8C')
-
-        canvas.axes.tick_params(colors='#8C8C8C')
-        ax2.tick_params(colors='#8C8C8C')
-        ax3.tick_params(colors='#8C8C8C')
-
+        canvas = MplCanvas(self, width=4, height=4, dpi=100)
+        # labels=cleaned_statuses, autopct=lambda p: '{:.0f}'.format(p * sum(counts) / 100), pctdistance=0.85,
+        canvas.axes.pie(cleaned_counts, colors=cleaned_colours, explode=explode, startangle=90)
         canvas.axes.set_facecolor('#363636')
         canvas.fig.set_facecolor('#363636')
 
+        canvas.fig.subplots_adjust(left=-0.05, right=1.05, bottom=-0.05, top=1.05)
+
+        # center_circle = mpatches.Circle((0, 0), 0.7, color='#363636')
+        # canvas.axes.add_artist(center_circle)
         canvas.setSizePolicy(QSizePolicy.MinimumExpanding, QSizePolicy.Minimum)
 
-        cursor = mplcursors.cursor(ax3, hover=mplcursors.HoverMode.Transient)
+        subwidget = QWidget()
+        layout = QHBoxLayout()
+        subwidget.setLayout(layout)
+        layout.addWidget(canvas)
 
-        @cursor.connect("add")
-        def on_add(sel):
-            sel.annotation.get_bbox_patch().set(fc="white")
-            sel.annotation.arrow_patch.set(arrowstyle="simple", fc="white", alpha=0)
-            sel.annotation.set_fontsize(9)
-            index = sel.target.index
-            days = due_counts.iloc[index]["due"]
-            if days == 0:
-                daystext = "Today"
-            elif days == 1:
-                daystext = "Tomorrow"
-            else:
-                daystext = f"In {days} days:"
-            count = due_counts.iloc[index]["count"]
-            if count == 1:
-                cardsdue = f"{count} card due"
-            else:
-                cardsdue = f"{count} cards due"
-            cumulative = due_counts['count'].cumsum()[index]
-
-            sel.annotation.set_text(f"{daystext}\n{cardsdue}\nRunning Total: {cumulative}")
-            x, y, width, height = sel.artist[sel.target.index].get_bbox().bounds
-            sel.annotation.xy = (x + width / 2, y + height)
-            sel.artist[sel.target.index].set_alpha(0.1)
-
-        @cursor.connect("remove")
-        def on_remove(sel):
-            sel.artist[sel.target.index].set_alpha(0)
-            for sel in cursor.selections:
-                sel.artist[sel.target.index].set_alpha(0.1)
-
-        futuredue = GraphWidget()
-        futuredue.titlelabel.setText("Future Due")
-        futuredue.frame.layout().addWidget(canvas)
-
-        font = QFont()
-        font.setPointSize(15)
-
-        # total, avg, due tmrw
         textwidget = QWidget()
         textlayout = QGridLayout()
         textwidget.setLayout(textlayout)
 
-        totalreviewslabel = QLabel("Total:")
-        totalreviewslabel.setAlignment(Qt.AlignRight)
-        totalreviewslabel.setFont(font)
+        font = QFont()
+        font.setPointSize(15)
 
-        totalreviewsstat = QLabel(f"{sum(due_counts['count'])} reviews")
-        totalreviewsstat.setAlignment(Qt.AlignLeft)
-        totalreviewsstat.setFont(font)
+        # statuses = ['New', 'Learning', 'Relearning', 'Young', 'Mature']
 
-        avglabel = QLabel("Average:")
-        avglabel.setAlignment(Qt.AlignRight)
-        avglabel.setFont(font)
+        newlabel = QLabel("New")
+        newlabel.setStyleSheet(f"color:{self.statuscolours[0]}")
+        newlabel.setAlignment(Qt.AlignLeft)
+        newlabel.setFont(font)
 
-        avgstat = QLabel(f"{int(round(sum(due_counts['count']) / (daysrange + 1), 0))} reviews/day")
-        avgstat.setAlignment(Qt.AlignLeft)
-        avgstat.setFont(font)
+        newcount = QLabel(f"{counts[0]}")
+        newcount.setAlignment(Qt.AlignRight)
+        newcount.setFont(font)
 
-        tmrwlabel = QLabel("Due Tomorrow:")
-        tmrwlabel.setAlignment(Qt.AlignRight)
-        tmrwlabel.setFont(font)
+        learninglabel = QLabel("Learning")
+        learninglabel.setStyleSheet(f"color:{self.statuscolours[1]}")
+        learninglabel.setAlignment(Qt.AlignLeft)
+        learninglabel.setFont(font)
 
-        tmrwstat = QLabel(f"{due_counts.iloc[1]['count']} reviews")
-        tmrwstat.setAlignment(Qt.AlignLeft)
-        tmrwstat.setFont(font)
+        learningcount = QLabel(f"{counts[1]}")
+        learningcount.setAlignment(Qt.AlignRight)
+        learningcount.setFont(font)
 
-        textlayout.addWidget(totalreviewslabel, 0, 0)
-        textlayout.addWidget(totalreviewsstat, 0, 1)
-        textlayout.addWidget(avglabel, 1, 0)
-        textlayout.addWidget(avgstat, 1, 1)
-        textlayout.addWidget(tmrwlabel, 2, 0)
-        textlayout.addWidget(tmrwstat, 2, 1)
+        relearninglabel = QLabel("Relearning")
+        relearninglabel.setStyleSheet(f"color:{self.statuscolours[2]}")
+        relearninglabel.setMinimumSize(140, 0)
+        relearninglabel.setAlignment(Qt.AlignLeft)
+        relearninglabel.setFont(font)
 
-        futuredue.frame.layout().addWidget(textwidget)
+        relearningcount = QLabel(f"{counts[2]}")
+        relearningcount.setAlignment(Qt.AlignRight)
+        relearningcount.setFont(font)
 
-        return futuredue
+        younglabel = QLabel("Young")
+        younglabel.setStyleSheet(f"color:{self.statuscolours[3]}")
+        younglabel.setAlignment(Qt.AlignLeft)
+        younglabel.setFont(font)
 
-    def createintervalsbar(self):
+        youngcount = QLabel(f"{counts[3]}")
+        youngcount.setAlignment(Qt.AlignRight)
+        youngcount.setFont(font)
+
+        maturelabel = QLabel("Mature")
+        maturelabel.setStyleSheet(f"color:{self.statuscolours[4]}")
+        maturelabel.setAlignment(Qt.AlignLeft)
+        maturelabel.setFont(font)
+
+        maturecount = QLabel(f"{counts[4]}")
+        maturecount.setAlignment(Qt.AlignRight)
+        maturecount.setFont(font)
+
+        totallabel = QLabel("Total")
+        totallabel.setAlignment(Qt.AlignLeft)
+        totallabel.setFont(font)
+
+        totalcount = QLabel(f"{sum(counts)}")
+        totalcount.setAlignment(Qt.AlignRight)
+        totalcount.setFont(font)
+
+        # calculate percentage of cards for each status
+        if sum(counts) != 0:
+            new_percentage = round(counts[0] / sum(counts) * 100, 1)
+            learning_percentage = round(counts[1] / sum(counts) * 100, 1)
+            relearning_percentage = round(counts[2] / sum(counts) * 100, 1)
+            young_percentage = round(counts[3] / sum(counts) * 100, 1)
+            mature_percentage = round(counts[4] / sum(counts) * 100, 1)
+        else:
+            new_percentage = learning_percentage = relearning_percentage = young_percentage = mature_percentage = 0
+
+        # create labels for each status with percentage counts
+        newpct = QLabel(f"({new_percentage}%)")
+        newpct.setAlignment(Qt.AlignRight)
+        newpct.setFont(font)
+
+        learningpct = QLabel(f"({learning_percentage}%)")
+        learningpct.setAlignment(Qt.AlignRight)
+        learningpct.setFont(font)
+
+        relearningpct = QLabel(f"({relearning_percentage}%)")
+        relearningpct.setAlignment(Qt.AlignRight)
+        relearningpct.setFont(font)
+
+        youngpct = QLabel(f"({young_percentage}%)")
+        youngpct.setAlignment(Qt.AlignRight)
+        youngpct.setFont(font)
+
+        maturepct = QLabel(f"({mature_percentage}%)")
+        maturepct.setAlignment(Qt.AlignRight)
+        maturepct.setFont(font)
+        maturepct.setMinimumSize(80, 0)
+
+        # textlayout.addSpacerItem(QSpacerItem(20, 0, QSizePolicy.Minimum, QSizePolicy.Expanding), 0, 0)
+        textlayout.addWidget(newlabel, 1, 0)
+        textlayout.addWidget(newcount, 1, 1)
+        textlayout.addWidget(newpct, 1, 2)
+        textlayout.addWidget(learninglabel, 2, 0)
+        textlayout.addWidget(learningcount, 2, 1)
+        textlayout.addWidget(learningpct, 2, 2)
+        textlayout.addWidget(relearninglabel, 3, 0)
+        textlayout.addWidget(relearningcount, 3, 1)
+        textlayout.addWidget(relearningpct, 3, 2)
+        textlayout.addWidget(younglabel, 4, 0)
+        textlayout.addWidget(youngcount, 4, 1)
+        textlayout.addWidget(youngpct, 4, 2)
+        textlayout.addWidget(maturelabel, 5, 0)
+        textlayout.addWidget(maturecount, 5, 1)
+        textlayout.addWidget(maturepct, 5, 2)
+        textlayout.addWidget(totallabel, 6, 0)
+        textlayout.addWidget(totalcount, 6, 1)
+
+        # textlayout.addSpacerItem(QSpacerItem(20, 0, QSizePolicy.Minimum, QSizePolicy.Expanding), 6, 0)
+
+        textlayout.setRowStretch(0, 1)
+        textlayout.setRowStretch(6, 1)
+        textlayout.setColumnStretch(3, 1)
+
+        layout.addWidget(textwidget)
+        # come back to here to add text stuff
+
+        return subwidget
+
+    def statuscount(self, status, cur):
+        if self.deck:
+            cur.execute(f"""SELECT COUNT (r.id) FROM revlog r
+                        INNER JOIN user_cards uc ON r.ucid = uc.id
+                        INNER JOIN cards c on uc.cid = c.id
+                        WHERE uc.uid = ? 
+                        AND c.deck_id = ?
+                        AND r.status = ?
+                        AND (r.time >= {math.floor(time() / 86400) * 86400}
+                        AND r.time <= {math.ceil(time() / 86400) * 86400})""",
+                        (self.user.id, self.deck.did, status))
+        else:
+            cur.execute(f"""SELECT COUNT (r.id) FROM revlog r
+                            INNER JOIN user_cards uc ON r.ucid = uc.id
+                            WHERE uc.uid = ? 
+                            AND r.status = ?
+                            AND (r.time >= {math.floor(time() / 86400) * 86400}
+                            AND r.time <= {math.ceil(time() / 86400) * 86400})""",
+                        (self.user.id, status))
+
+        return cur.fetchone()[0]
+
+    def createintervalsbar(self, maxivl, percentage):
         # handle ranges so if range falls into a given bracket, ivls are grouped into divisions.
         # when plotting over ranges, keep the sql fetch the same, just filter the dataframe to cut out values before plotting
         con = sqlite3.connect(database)
         cur = con.cursor()
-        if self.deck:
-            cur.execute("""SELECT uc.ivl FROM user_cards uc
-            INNER JOIN cards c ON uc.cid = c.id
-            INNER JOIN decks d ON c.deck_ud = d.id
-            WHERE uc.uid = ?
-            AND d.id = ?
-            AND uc.ivl >= 86400""", (self.user.id, self.deck.did))
+        if maxivl:
+            if self.deck:
+                cur.execute("""SELECT uc.ivl FROM user_cards uc
+                INNER JOIN cards c ON uc.cid = c.id
+                INNER JOIN decks d ON c.deck_id = d.id
+                WHERE uc.uid = ?
+                AND d.id = ?
+                AND uc.ivl >= 86400
+                AND uc.ivl <= ?""", (self.user.id, self.deck.did, maxivl * 86400))
+            else:
+                cur.execute("""SELECT uc.ivl FROM user_cards uc
+                WHERE uc.uid = ?
+                AND uc.ivl >= 86400
+                AND uc.ivl <= ?""", (self.user.id, maxivl * 86400))
+        elif percentage:
+            if self.deck:
+                cur.execute("""SELECT COUNT(uc.id) FROM user_cards uc
+                INNER JOIN cards c ON uc.cid = c.id
+                INNER JOIN decks d ON c.deck_id = d.id
+                WHERE uc.uid = ?
+                AND d.id = ?
+                AND uc.ivl >= 86400""", (self.user.id, self.deck.did))
+                count = cur.fetchone()[0]
+                tofetch = math.ceil(count * percentage)
+
+                cur.execute("""SELECT uc.ivl FROM user_cards uc
+                INNER JOIN cards c ON uc.cid = c.id
+                INNER JOIN decks d ON c.deck_id = d.id
+                WHERE uc.uid = ?
+                AND d.id = ?
+                AND uc.ivl >= 86400
+                ORDER BY uc.ivl ASC
+                LIMIT ?""", (self.user.id, self.deck.did, tofetch))
+            else:
+                cur.execute("""SELECT COUNT(uc.id) FROM user_cards uc
+                                WHERE uc.uid = ?
+                                AND uc.ivl >= 86400""", (self.user.id,))
+
+                count = cur.fetchone()[0]
+                tofetch = math.ceil(count * percentage)
+
+                cur.execute("""SELECT uc.ivl FROM user_cards uc
+                WHERE uc.uid = ?
+                AND uc.ivl >= 86400
+                AND uc.ivl >= 86400
+                ORDER BY uc.ivl ASC
+                LIMIT ?""", (self.user.id, tofetch))
         else:
-            cur.execute("""SELECT uc.ivl FROM user_cards uc
-            WHERE uc.uid = ?
-            AND uc.ivl >= 86400""", (self.user.id,))
-        # min ivl = 1 day to avoid having to deal with learing/new cards
+            if self.deck:
+                cur.execute("""SELECT uc.ivl FROM user_cards uc
+                INNER JOIN cards c ON uc.cid = c.id
+                INNER JOIN decks d ON c.deck_id = d.id
+                WHERE uc.uid = ?
+                AND d.id = ?
+                AND uc.ivl >= 86400""", (self.user.id, self.deck.did))
+            else:
+                cur.execute("""SELECT uc.ivl FROM user_cards uc
+                WHERE uc.uid = ?
+                AND uc.ivl >= 86400""", (self.user.id,))
+
+        # min ivl = 1 day to avoid having to deal with sub 1-day cards
 
         ivlsdf = pd.DataFrame(cur.fetchall(), columns=['ivl'])
+
+        if ivlsdf['ivl'].empty:
+            nodata = QLabel("No Data")
+            font = QFont()
+            font.setPointSize(24)
+            nodata.setFont(font)
+            nodata.setStyleSheet("color:#8c8c8c;")
+            nodata.setAlignment(Qt.AlignCenter)
+            nodata.setMinimumSize(0, 300)
+            return nodata
+
         ivlsdf = (ivlsdf / 86400).astype(int)
 
         canvas = MplCanvas(self, width=5, height=4, dpi=100)
@@ -4079,29 +4629,46 @@ class StatsPage(QMainWindow):
 
         ivlcounts = ivlsdf.groupby(['ivl']).size().reset_index(name='count')
 
-        for i in range(1, max(ivlcounts['ivl']) + 1):
-            count = ivlcounts.loc[ivlcounts['ivl'] == i]
-            if count.empty:
-                ivlcounts.loc[len(ivlcounts)] = [i, 0]
+        if maxivl:
+            for i in range(1, maxivl + 1):
+                count = ivlcounts.loc[ivlcounts['ivl'] == i]
+                if count.empty:
+                    ivlcounts.loc[len(ivlcounts)] = [i, 0]
+        else:
+            for i in range(1, max(ivlcounts['ivl']) + 1):
+                count = ivlcounts.loc[ivlcounts['ivl'] == i]
+                if count.empty:
+                    ivlcounts.loc[len(ivlcounts)] = [i, 0]
+            ivlcounts = ivlcounts.sort_values(by=['ivl']).reset_index(drop=True)
+
         ivlcounts = ivlcounts.sort_values(by=['ivl']).reset_index(drop=True)
 
-        print(ivlcounts)
+        group_size = math.ceil(max(ivlcounts['ivl']) / 80)
+        num_groups = math.ceil(len(ivlcounts['ivl']) / group_size)
+        groups = [(i * group_size + 1) for i in range(num_groups)]
+        group_ranges = [x - 1 for x in groups]
+        ivlcounts['group'] = pd.cut(ivlcounts['ivl'], bins=group_ranges + [max(group_ranges) + group_size],
+                                    labels=groups)
+        grouped_counts = ivlcounts.groupby('group')['count'].sum().reset_index()
+        grouped_counts['group'] = grouped_counts['group'].astype(int)
 
-        canvas.axes.bar(ivlcounts['ivl'], ivlcounts['count'], color=self.statuscolours[0], alpha=1)
+        canvas.axes.bar(grouped_counts['group'], grouped_counts['count'], color=self.statuscolours[0], alpha=1,
+                        width=group_size*0.9, align='edge')
         canvas.axes.yaxis.set_major_locator(ticker.MaxNLocator(integer=True))
 
-        # canvas.axes.set_xlabel('Due')
+        canvas.axes.set_xlim(right=max(grouped_counts['group'] + group_size), left=1)
+
         ax2 = canvas.axes.twinx()
 
-        ax2.plot(ivlcounts['ivl'], ivlcounts['count'].cumsum(), c='#646464')
-        ax2.fill_between(ivlcounts['ivl'], ivlcounts['count'].cumsum(), 0, alpha=0.1, color='#8C8C8C')
-        ax2.set_ylim(0, max(ivlcounts['count'].cumsum()) + 0.5)
+        ax2.plot(grouped_counts['group'] + group_size/2, grouped_counts['count'].cumsum(), c='#a6a6a6', lw=0.2)
+        ax2.fill_between(grouped_counts['group'] + group_size/2, grouped_counts['count'].cumsum(), 0, alpha=0.1, color='#8C8C8C')
+        ax2.set_ylim(0, max(grouped_counts['count'].cumsum()))
+        ax2.yaxis.set_major_locator(ticker.MaxNLocator(integer=True))
         ax2.set_ylim(bottom=0)
 
-        canvas.axes.set_xlim(right=max(ivlcounts['ivl'] + 0.5), left=min(ivlcounts['ivl']) - 0.5)
-
         ax3 = canvas.axes.twinx()
-        ax3.bar(ivlcounts['ivl'], max(ivlcounts['count']), color='white', alpha=0)
+        ax3.bar(grouped_counts['group'], max(grouped_counts['count']), color='white', alpha=0, width=group_size*0.9,
+                align='edge')
         ax3.get_yaxis().set_ticks([])
 
         canvas.axes.spines[['top']].set_visible(False)
@@ -4126,36 +4693,36 @@ class StatsPage(QMainWindow):
             sel.annotation.get_bbox_patch().set(fc="white")
             sel.annotation.arrow_patch.set(arrowstyle="simple", fc="white", alpha=0)
             sel.annotation.set_fontsize(9)
-            index = sel.target.index
-            ivl = ivlcounts.iloc[index]["ivl"]
+            index = sel.index
             # range checking here later on
-            ivltext = f"with a {ivl} day inteval"
-            count = ivlcounts.iloc[index]["count"]
+            if group_size == 1:
+                ivl = grouped_counts.iloc[index]["group"]
+                ivltext = f"with a {ivl} day inteval"
+            else:
+                ivlstart = grouped_counts.iloc[index]['group']
+                ivlend = ivlstart + group_size - 1
+                ivltext = f"with a {ivlstart}-{ivlend} day inteval"
+            count = grouped_counts.iloc[index]["count"]
             if count == 1:
                 cardsno = f"{count} card with a "
             else:
                 cardsno = f"{count} cards with a "
-            cumulative = ivlcounts['count'].cumsum()[index]
-
-            x = decimal.Decimal(cumulative/sum(ivlcounts['count']))
+            cumulative = grouped_counts['count'].cumsum()[index]
+            x = decimal.Decimal(cumulative / sum(grouped_counts['count']))
             cumpct = x * 100
 
             rounded_percentage = cumpct.quantize(decimal.Decimal('0.1'), rounding=decimal.ROUND_HALF_UP)
 
             sel.annotation.set_text(f"{cardsno}{ivltext}\nRunning Total: {rounded_percentage}%")
-            x, y, width, height = sel.artist[sel.target.index].get_bbox().bounds
+            x, y, width, height = sel.artist[sel.index].get_bbox().bounds
             sel.annotation.xy = (x + width / 2, y + height)
-            sel.artist[sel.target.index].set_alpha(0.1)
+            sel.artist[sel.index].set_alpha(0.1)
 
         @cursor.connect("remove")
         def on_remove(sel):
-            sel.artist[sel.target.index].set_alpha(0)
+            sel.artist[sel.index].set_alpha(0)
             for sel in cursor.selections:
-                sel.artist[sel.target.index].set_alpha(0.1)
-
-        ivlswidget = GraphWidget()
-        ivlswidget.titlelabel.setText("Review Intervals")
-        ivlswidget.frame.layout().addWidget(canvas)
+                sel.artist[sel.index].set_alpha(0.1)
 
         textwidget = QWidget()
         textlayout = QVBoxLayout()
@@ -4171,7 +4738,7 @@ class StatsPage(QMainWindow):
                         INNER JOIN cards c ON uc.cid = c.id
                         INNER JOIN decks d ON c.deck_id = d.id
                         WHERE uc.uid = ?
-                        AND d.id = ?""", (self.user.id, self.deck.id))
+                        AND d.id = ?""", (self.user.id, self.deck.did))
         else:
             cur.execute("""SELECT AVG(ivl) FROM user_cards
                         WHERE uid = ?""", (self.user.id,))
@@ -4184,17 +4751,174 @@ class StatsPage(QMainWindow):
 
         textlayout.addWidget(avgivllabel)
 
-        ivlswidget.frame.layout().addWidget(textwidget)
+        subwidget = QWidget()
+        sublayout = QVBoxLayout()
+        subwidget.setLayout(sublayout)
+        sublayout.addWidget(canvas)
+        sublayout.addWidget(textwidget)
 
-        return ivlswidget
+        return subwidget
 
-    def createanswerbuttonsbar(self):
+    def createeasefactorbar(self):
+        con = sqlite3.connect(database)
+        cur = con.cursor()
+
+        if self.deck:
+            cur.execute("""SELECT uc.ef FROM user_cards uc
+            INNER JOIN cards c on uc.cid = c.id
+            WHERE c.deck_id = ?
+            AND uc.uid = ?""", (self.deck.did, self.user.id))
+        else:
+            cur.execute("""SELECT uc.ef FROM user_cards uc
+                        WHERE uc.uid = ?""", (self.user.id,))
+
+        efdf = pd.DataFrame(cur.fetchall(), columns=['ef'])
+
+        if efdf['ef'].empty:
+            nodata = QLabel("No Data")
+            font = QFont()
+            font.setPointSize(24)
+            nodata.setFont(font)
+            nodata.setStyleSheet("color:#8c8c8c;")
+            nodata.setAlignment(Qt.AlignCenter)
+            nodata.setMinimumSize(0, 300)
+            return nodata
+
+        canvas = MplCanvas(self, width=5, height=4, dpi=100)
+        canvas.setSizePolicy(QSizePolicy.MinimumExpanding, QSizePolicy.Minimum)
+
+        efcounts = efdf.groupby(['ef']).size().reset_index(name='count')
+
+        # need to do some kind of range handling, so if max card ease - 130 is greater than a certain value,
+
+        for i in range(130, int(max(efcounts['ef'])) + 1):
+            count = efcounts.loc[efcounts['ef'] == i]
+            if count.empty:
+                efcounts.loc[len(efcounts)] = [i, 0]
+        efcounts = efcounts.sort_values(by=['ef']).reset_index(drop=True)
+
+        ef_max = efcounts['ef'].max()
+        if ef_max >= 200:
+            group_size = 5
+        else:  # could add a group size 2
+            group_size = 1
+        num_groups = math.ceil((ef_max - 130) / group_size) + 1
+        groups = [(130 + i * group_size) for i in range(num_groups)]
+        group_ranges = [x - 1 for x in groups]
+        efcounts['group'] = pd.cut(efcounts['ef'], bins=group_ranges + [max(group_ranges) + group_size], labels=groups)
+        grouped_counts = efcounts.groupby('group')['count'].sum().reset_index()
+        grouped_counts['group'] = grouped_counts['group'].astype(int)
+
+        color_map = ['#F52A2A', '#F43326', '#F43C22', '#F3451E', '#F34F1A', '#F25A16', '#F16412', '#F0700E',
+                     '#EB7B0F', '#E6860F', '#E1910F', '#DD9B0F', '#D8A40F', '#D3AC0F', '#CEB40F', '#CABC0F',
+                     '#C5C30F', '#B8C00F', '#A9BC0F', '#9AB70F', '#8CB20F', '#7FAE0F', '#72A90F', '#66A50F',
+                     '#5AA00F', '#4F9B0F', '#44970F', '#3A920E', '#318E0E', '#28890E', '#20850E', '#18800E',
+                     '#107C0D', '#0D7711', '#0D7317']
+
+        if len(grouped_counts['group']) <= len(color_map):
+            colors = color_map[:len(grouped_counts['group'])]
+        else:
+            colors = color_map + (['#001AFF'] * (len(grouped_counts['group']) - len(color_map)))
+
+        # try to get a gradient from red @ 130 to green/dark green past 250
+        canvas.axes.bar(grouped_counts['group'], grouped_counts['count'], color=colors, alpha=1, width=group_size - 0.5,
+                        align='edge')
+        canvas.axes.yaxis.set_major_locator(ticker.MaxNLocator(integer=True))
+
+        # canvas.axes.set_xlabel('Due')
+
+        canvas.axes.set_xlim(right=max(grouped_counts['group'] + 1.5 * group_size), left=130 - 0.5 * group_size)
+
+        ax3 = canvas.axes.twinx()
+        ax3.bar(grouped_counts['group'], max(grouped_counts['count']), color='white', alpha=0, width=group_size - 0.5,
+                align='edge')
+        ax3.get_yaxis().set_ticks([])
+
+        canvas.axes.spines[['top']].set_visible(False)
+        ax3.spines[['top', 'left', 'bottom', 'right']].set_visible(False)
+
+        canvas.axes.spines[['left', 'bottom', 'right']].set_color('#8C8C8C')
+
+        canvas.axes.tick_params(colors='#8C8C8C')
+        ax3.tick_params(colors='#8C8C8C')
+
+        canvas.axes.set_facecolor('#363636')
+        canvas.fig.set_facecolor('#363636')
+
+        canvas.setSizePolicy(QSizePolicy.MinimumExpanding, QSizePolicy.Minimum)
+
+        cursor = mplcursors.cursor(ax3, hover=mplcursors.HoverMode.Transient)
+
+        @cursor.connect("add")
+        def on_add(sel):
+            sel.annotation.get_bbox_patch().set(fc="white")
+            sel.annotation.arrow_patch.set(arrowstyle="simple", fc="white", alpha=0)
+            sel.annotation.set_fontsize(9)
+            index = sel.index
+            ease = grouped_counts.iloc[index]['group']
+            count = grouped_counts.iloc[index]['count']
+            if count == 1:
+                counttext = f"{count} card with "
+            else:
+                counttext = f"{count} cards with "
+            sel.annotation.set_text(f"{counttext}{ease}% ease")
+            x, y, width, height = sel.artist[sel.index].get_bbox().bounds
+            sel.annotation.xy = (x + width / 2, y + height)
+            sel.artist[sel.index].set_alpha(0.1)
+
+        @cursor.connect("remove")
+        def on_remove(sel):
+            sel.artist[sel.index].set_alpha(0)
+            for sel in cursor.selections:
+                sel.artist[sel.index].set_alpha(0.1)
+
+        font = QFont()
+        font.setPointSize(15)
+
+        avgeaselabel = QLabel()
+        avgeaselabel.setAlignment(Qt.AlignHCenter)
+        avgeaselabel.setFont(font)
+
+        con = sqlite3.connect(database)
+        cur = con.cursor()
+
+        if self.deck:
+            cur.execute("""SELECT AVG(uc.ef) FROM user_cards uc
+                        INNER JOIN cards c ON uc.cid = c.id
+                        INNER JOIN decks d ON c.deck_id = d.id
+                        WHERE uc.uid = ?
+                        AND d.id = ?""", (self.user.id, self.deck.did))
+        else:
+            cur.execute("""SELECT AVG(ef) FROM user_cards
+                        WHERE uid = ?""", (self.user.id,))
+
+        avgease = cur.fetchone()[0]
+        cur.close()
+        con.close()
+
+        avgeaselabel.setText(f"Average ease: {int(round(avgease, 0))}%")
+
+        subwidget = QWidget()
+        sublayout = QVBoxLayout()
+        subwidget.setLayout(sublayout)
+        sublayout.addWidget(canvas)
+        sublayout.addWidget(avgeaselabel)
+
+        return subwidget
+
+    def createanswerbuttonsbar(self, daysrange):
         con = sqlite3.connect(database)
         cur = con.cursor()
 
         learningcounts = []
         youngcounts = []
         maturecounts = []
+        if daysrange:
+            today = datetime.date.today()
+            todaytimestamp = int(mktime(today.timetuple()))
+            cutoff = todaytimestamp - 86400 * daysrange
+        else:
+            cutoff = 0
 
         if self.deck:
             for i in range(4):
@@ -4204,16 +4928,19 @@ class StatsPage(QMainWindow):
                 WHERE r.ease = ?
                 AND uc.uid = ?
                 AND c.deck_id = ?
-                AND r.status = 1 OR r.status = 3""", (i, self.user.id, self.deck.did))
+                AND (r.status = 1 OR r.status = 3)
+                AND r.time >= ?""", (i, self.user.id, self.deck.did, cutoff))
                 count = cur.fetchone()[0]
                 learningcounts.append(count)
+
         else:
             for i in range(4):
                 cur.execute("""SELECT COUNT(r.id) FROM revlog r
                 INNER JOIN user_cards uc ON r.ucid = uc.id
                 WHERE r.ease = ?
                 AND uc.uid = ?
-                AND r.status = 1 OR r.status = 3""", (i, self.user.id))
+                AND (r.status = 1 OR r.status = 3)
+                AND r.time >= ?""", (i, self.user.id, cutoff))
                 count = cur.fetchone()[0]
                 learningcounts.append(count)
 
@@ -4226,9 +4953,11 @@ class StatsPage(QMainWindow):
                 AND uc.uid = ?
                 AND c.deck_id = ?
                 AND r.status = 2
-                AND r.lastivl < ?""", (i, self.user.id, self.deck.did, 30 * 86400))
+                AND r.lastivl < ?
+                AND r.time >= ?""", (i, self.user.id, self.deck.did, 30 * 86400, cutoff))
                 count = cur.fetchone()[0]
                 youngcounts.append(count)
+
         else:
             for i in range(4):
                 cur.execute("""SELECT COUNT(r.id) FROM revlog r
@@ -4236,7 +4965,8 @@ class StatsPage(QMainWindow):
                 WHERE r.ease = ?
                 AND uc.uid = ?
                 AND r.status = 2
-                AND r.lastivl < ?""", (i, self.user.id, 30 * 86400))
+                AND r.lastivl < ?
+                AND r.time >= ?""", (i, self.user.id, 30 * 86400, cutoff))
                 count = cur.fetchone()[0]
                 youngcounts.append(count)
 
@@ -4249,7 +4979,8 @@ class StatsPage(QMainWindow):
                 AND uc.uid = ?
                 AND c.deck_id = ?
                 AND r.status = 2
-                AND r.lastivl >= ?""", (i, self.user.id, self.deck.did, 30 * 86400))
+                AND r.lastivl >= ?
+                AND r.time >= ?""", (i, self.user.id, self.deck.did, 30 * 86400, cutoff))
                 count = cur.fetchone()[0]
                 maturecounts.append(count)
         else:
@@ -4259,14 +4990,27 @@ class StatsPage(QMainWindow):
                 WHERE r.ease = ?
                 AND uc.uid = ?
                 AND r.status = 2
-                AND r.lastivl >= ?""", (i, self.user.id, 30 * 86400))
+                AND r.lastivl >= ?
+                AND r.time >= ?""", (i, self.user.id, 30 * 86400, cutoff))
                 count = cur.fetchone()[0]
                 maturecounts.append(count)
+
+        cur.close()
+        con.close()
 
         allcounts = [x for x in zip(learningcounts, youngcounts, maturecounts)]
-        print(allcounts)
+
+        if all(sum(tup) == 0 for tup in allcounts):
+            nodata = QLabel("No Data")
+            font = QFont()
+            font.setPointSize(24)
+            nodata.setFont(font)
+            nodata.setStyleSheet("color:#8c8c8c;")
+            nodata.setAlignment(Qt.AlignCenter)
+            nodata.setMinimumSize(0, 300)
+            return nodata
+
         x = np.arange(3)
-        print(x)
 
         canvas = MplCanvas(self, width=5, height=4, dpi=100)
 
@@ -4277,15 +5021,29 @@ class StatsPage(QMainWindow):
         # x_pos = [i for i in range(12)]
 
         # Plot the bars for the first set of values
-        canvas.axes.bar(x, allcounts[0], width=bar_width-0.01, color=self.answercolours[0])
-        canvas.axes.bar(x + bar_width, allcounts[1], width=bar_width-0.01, color=self.answercolours[1])
-        canvas.axes.bar(x + 2 * bar_width, allcounts[2], width=bar_width-0.01, color=self.answercolours[2])
-        canvas.axes.bar(x + 3 * bar_width, allcounts[3], width=bar_width-0.01, color=self.answercolours[3])
+        canvas.axes.bar(x, allcounts[0], width=bar_width - 0.01, color=self.answercolours[0])
+        canvas.axes.bar(x + bar_width, allcounts[1], width=bar_width - 0.01, color=self.answercolours[1])
+        canvas.axes.bar(x + 2 * bar_width, allcounts[2], width=bar_width - 0.01, color=self.answercolours[2])
+        canvas.axes.bar(x + 3 * bar_width, allcounts[3], width=bar_width - 0.01, color=self.answercolours[3])
 
         # Set the x-axis tick positions and labels
+        canvas.axes.yaxis.set_major_locator(ticker.MaxNLocator(integer=True))
         canvas.axes.set_xticks(x + bar_width * 1.5)
         # todo change labels
-        canvas.axes.set_xticklabels(['Learning', 'Young', 'Mature'])
+
+        try:
+            learninglabel = f"Learning ({round((sum(learningcounts) - learningcounts[0]) / sum(learningcounts) * 100, 2)}%)"
+        except:
+            learninglabel = f"Learning"
+        try:
+            younglabel = f"Young ({round((sum(youngcounts) - youngcounts[0]) / sum(youngcounts) * 100, 2)}%)"
+        except:
+            younglabel = f"Young"
+        try:
+            maturelabel = f"Mature ({round((sum(maturecounts) - maturecounts[0]) / sum(maturecounts) * 100, 2)}%)"
+        except:
+            maturelabel = f"Mature"
+        canvas.axes.set_xticklabels([learninglabel, younglabel, maturelabel])
 
         x_positions = np.concatenate([x, x + bar_width, x + 2 * bar_width, x + 3 * bar_width])
         # array of all plotted x positions which will be used for plotting the highlight bars and allow for
@@ -4294,7 +5052,8 @@ class StatsPage(QMainWindow):
         canvas.setSizePolicy(QSizePolicy.MinimumExpanding, QSizePolicy.Minimum)
 
         ax3 = canvas.axes.twinx()
-        ax3.bar(x_positions, np.max(allcounts, axis=None)*len(x_positions), color='white', alpha=0, width=bar_width-0.01)
+        ax3.bar(x_positions, np.max(allcounts, axis=None) * len(x_positions), color='white', alpha=0,
+                width=bar_width - 0.01)
         ax3.get_yaxis().set_ticks([])
 
         canvas.axes.spines[['top']].set_visible(False)
@@ -4314,7 +5073,7 @@ class StatsPage(QMainWindow):
             sel.annotation.get_bbox_patch().set(fc="white")
             sel.annotation.arrow_patch.set(arrowstyle="simple", fc="white", alpha=0)
             sel.annotation.set_fontsize(9)
-            index = sel.target.index
+            index = sel.index
             countvalues = np.array(allcounts).flatten()
             if index % 3 == 0:
                 offset = 0
@@ -4334,26 +5093,26 @@ class StatsPage(QMainWindow):
 
             total = 0
             for i in range(0, len(countvalues), 3):
-                print(i)
-                total += countvalues[i+offset]
+                total += countvalues[i + offset]
 
             pressedcount = countvalues[index]
             button = f"Button: {ease}"  # could change this to easy, hard, etc. using a dict
             timespressed = f"Times pressed: {pressedcount} ({round((pressedcount / total) * 100, 2)}%)"
-            correct = f"{total - countvalues[index % 3]}/{total} correct ({round(((total - countvalues[index % 3])/ total) * 100, 2)}%)"
+            correct = f"{total - countvalues[index % 3]}/{total} correct ({round(((total - countvalues[index % 3]) / total) * 100, 2)}%)"
 
             sel.annotation.set_text(f"{button}\n{timespressed}\n{correct}")
-            x, y, width, height = sel.artist[sel.target.index].get_bbox().bounds
+            x, y, width, height = sel.artist[sel.index].get_bbox().bounds
             sel.annotation.xy = (x + width / 2, y + height)
-            sel.artist[sel.target.index].set_alpha(0.1)
+            sel.artist[sel.index].set_alpha(0.1)
 
         @cursor.connect("remove")
         def on_remove(sel):
-            sel.artist[sel.target.index].set_alpha(0)
+            sel.artist[sel.index].set_alpha(0)
             for sel in cursor.selections:
-                sel.artist[sel.target.index].set_alpha(0.1)
+                sel.artist[sel.index].set_alpha(0.1)
 
         return canvas
+
 
 
 class MplCanvas(FigureCanvasQTAgg):
@@ -4377,16 +5136,16 @@ class GraphWidget(QWidget):
         self.setStyleSheet('background-color:#363636')
 
 
-class Browse(QMainWindow):
+class Browse(QWidget):
     # todo card data will automatically update with changes made by the creator, could add an option that allow
     #  creator to allow/disallow copies being made
     # also maybe open another window if the creator is accessing a deck, for now will just no connect the button
     # also need to refactor to avoid using 2 duplicate containers for decks
-    def __init__(self, user):
+    def __init__(self, user, stack):
         self.user = user
         super().__init__()
         loadUi("browse.ui", self)
-        connectmainbuttons(self)
+        connectmainbuttons(self, stack)
 
         # Could later check for updates on a deck allowing the user to keep their current version or sync changes. For
         # now will just ignore this and have 1 time deck copying in the current state of the deck.
@@ -4556,7 +5315,6 @@ class PublicDeckView(QWidget):
 
             row_height = table.verticalHeader().sectionSize(0)
 
-            print(tablemodel.rowCount())
             table_height = (tablemodel.rowCount() * row_height) + 2
             table.setMinimumHeight(table_height)
             table.setMaximumHeight(table_height)
@@ -4608,7 +5366,7 @@ class PublicDeckView(QWidget):
 #############################
 
 
-def resetstack():
+def resetstack(stack):
     """
     used after navigating away from any of the main 5 pages
     """
@@ -4618,53 +5376,52 @@ def resetstack():
         widget.deleteLater()
 
 
-def gotodecks():
-    stack.setCurrentIndex(3)
-    resetstack()
-    refreshmainwindows()
-
-
-def gotoadd():
-    stack.setCurrentIndex(4)
-    resetstack()
-    refreshmainwindows()
-
-
-def gotocards():
-    stack.setCurrentIndex(5)
-    resetstack()
-    refreshmainwindows()
-
-
-def gotostats():
-    stack.setCurrentIndex(6)
-    resetstack()
-    refreshmainwindows()
-
-
-def gotobrowse():
-    stack.setCurrentIndex(7)
-    resetstack()
-    refreshmainwindows()
-
-
-def connectmainbuttons(window):
-    window.decks.clicked.connect(gotodecks)
-    window.add.clicked.connect(gotoadd)
-    window.cards.clicked.connect(gotocards)
-    window.stats.clicked.connect(gotostats)
-    window.browse.clicked.connect(gotobrowse)
-
-
-def refreshmainwindows():
-    """
-    stack widgets [3,4,5,6,7] = [DecksMain, AddCard, CardsMain, StatsPage, Browse]
-    """
+def gotodecks(stack):
     stack.widget(3).refresh()
+    resetstack(stack)
+    stack.setCurrentIndex(3)
+
+
+def gotoadd(stack):
     stack.widget(4).refresh()
+    resetstack(stack)
+    stack.setCurrentIndex(4)
+
+
+def gotocards(stack):
     stack.widget(5).refresh()
+    resetstack(stack)
+    stack.setCurrentIndex(5)
+
+
+def gotostats(stack):
     stack.widget(6).refresh()
+    resetstack(stack)
+    stack.setCurrentIndex(6)
+
+
+def gotobrowse(stack):
     stack.widget(7).refresh()
+    resetstack(stack)
+    stack.setCurrentIndex(7)
+
+
+def connectmainbuttons(window, stack):
+    window.decks.clicked.connect(lambda: gotodecks(stack))
+    window.add.clicked.connect(lambda: gotoadd(stack))
+    window.cards.clicked.connect(lambda: gotocards(stack))
+    window.stats.clicked.connect(lambda: gotostats(stack))
+    window.browse.clicked.connect(lambda: gotobrowse(stack))
+
+
+# def refreshmainwindows():
+#     """
+#     stack widgets [3,4,5,6,7] = [DecksMain, AddCard, CardsMain, StatsPage, Browse]
+#     """
+#     stack.widget(4).refresh()
+#     stack.widget(5).refresh()
+#     stack.widget(6).refresh()
+#     stack.widget(7).refresh()
 
 
 def converttime(seconds, full=False):
@@ -4699,6 +5456,7 @@ def converttime(seconds, full=False):
             return f"{hours:.0f} hours"
         else:
             return f"{minutes:.0f} minutes"
+
 
 def sha_256(message):
     # Initialize hash values: (first 32 bits of the fractional parts of the square roots of the first 8 primes 2..19):
@@ -4820,156 +5578,15 @@ def regexp(expr, item):
     """
     return re.search(expr, item, re.IGNORECASE) is not None
 
-
-"""
-REDUNDANT CODE BELOW!!!! NEEDS TO BE MIGRATED TO GUI.
-"""
-
-
-class Main:
-    def __init__(self):
-        self.user = None
-        self.login()
-
-    # todo add updation of user dom table on any actions (optional)
-
-    # login done
-    # deck selection done
-    # todo - migrate flashcard moving
-    # todo - migrate public deck adding to library + add checking for duplication - maybe done but left in rn
-
-    def move_flashcards(self):
-        # testing: invalid inputs for everything, selecting empty decks, same decks etc. (although not really necessary until finalised with GUI)
-        con = sqlite3.connect(database)
-        cur = con.cursor()
-        while True:
-            empty = True
-            while empty:
-                dids = []
-                names = []
-                cur.execute("SELECT id, name FROM decks")
-                for fetch in cur.fetchall():
-                    dids.append(fetch[0])
-                    names.append(fetch[1])
-                print("DECKS:")
-                for i in range(len(dids)):
-                    print(f"{dids[i]} - {names[i]}")
-                deckfrom = None
-                while deckfrom not in dids:
-                    deckfrom = int(input("Enter id of deck to move from..."))
-                    if not deckfrom in dids:
-                        print("Invalid deck ID\n")
-                print(f"Deck selected: {names[dids.index(deckfrom)]}")
-
-                cur.execute("SELECT id, data FROM cards WHERE deck_id = ?", [deckfrom])
-                cids = []
-                datas = []
-                # todo add checking for if deck is empty
-                for fetch in cur.fetchall():
-                    cids.append(fetch[0])
-                    datas.append(fetch[1])
-                    empty = False  # only sets empty to false if deck contains cards
-                if empty:
-                    print("Selected deck is empty\n")
-
-            print("CARDS:")
-            for i in range(len(cids)):
-                print(f"{cids[i]}: {datas[i]}")
-
-            cid = None
-            while cid not in cids:
-                cid = int(input("Enter id of card to move..."))
-
-            print("DECKS:")
-            for i in range(len(dids)):
-                print(f"{dids[i]} - {names[i]}")
-            deckto = None
-            while deckto not in dids:
-                deckto = int(input("Enter id of deck to move to..."))
-                if deckto == deckfrom:
-                    print("Same deck selected")
-                    deckto = None
-            print(f"Deck selected: {names[dids.index(deckto)]}")
-
-            while True:
-                confirm = input("confirm move? (no:0, yes:1) ")
-                if confirm in ['0', '1']:
-                    break
-                print("invalid input")
-
-            if confirm == '1':
-                break
-            else:
-                print("\nmove cancelled")
-                while True:
-                    exit = input("enter 1 to continue, 0 to exit")
-                    if exit in ['0', '1']:
-                        break
-                    print("invalid input")
-                if exit == '1':
-                    break
-                elif exit == '0':
-                    self.menu()
-
-        cur.execute("""UPDATE cards SET
-        deck_id = ?,
-        modified = ?
-        WHERE id = ?""", (deckto, time(), cid))
-
-        print(f"Move complete from {names[dids.index(deckfrom)]} -> {names[dids.index(deckto)]}")
-        con.commit()
-        cur.close()
-        con.close()
-        self.menu()
-
-    def _copy_deck(self, did, cur, con, deckname):
-        cur.execute("SELECT id, name, new_init_ef FROM configs where uid = ?", (self.user.id,))
-        ids, names, efs = zip(*[(row[0], row[1], row[2]) for row in cur.fetchall()])
-        for i in range(len(ids)):
-            print(f"{ids[i]} - {names[i]}")
-        if not ids:
-            print("you do not have any configs setup")
-        while True:
-            config = int(input("\nEnter a valid config id or 'exit' to return"))
-            if config == 'exit':
-                return
-            elif config in ids:
-                break
-            else:
-                print("invalid input")
-
-        cur.execute("""INSERT INTO user_decks (uid, deck_id, config_id) VALUES (?, ?, ?)""",
-                    (self.user.id, did, config))
-        ef = efs[ids.index(config)]
-        self._copy_cards(did, cur, con, ef)
-        print(f"Deck {deckname} successfully added to your library")
-
-
 """
 PROGRAM EXECUTION:
 """
 
 database = 'data/newdb.db'
 
-app = QApplication(sys.argv)
-# app.setStyle("windows")
-stack = QStackedWidget()
-
-welcome = WelcomeScreen()
-stack.addWidget(welcome)
-login = Login()
-stack.addWidget(login)
-create = CreateAccount()
-stack.addWidget(create)
-
-# temporary while ui is not scalable
-# stack.sizeHint().setHeight(900)
-# stack.sizeHint().setWidth(1600)
-stack.resize(1600, 900)
-# stack.updateGeometry()
-stack.show()
-
-try:
+if __name__ == '__main__':
+    app = QApplication(sys.argv)
+    main_window = MainWindow()
+    main_window.resize(1600, 900)
+    main_window.show()
     sys.exit(app.exec_())
-except:
-    print("Exiting")

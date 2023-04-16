@@ -327,7 +327,7 @@ font: 16pt &quot;MS Shell Dlg 2&quot;;color:rgb(47, 50, 58)</string>
      <property name="styleSheet">
       <string notr="true">border : 0;
 background: transparent;
-color:rgb(65, 71, 78)</string>
+</string>
      </property>
      <property name="text">
       <string>Already have an account? Login.</string>
