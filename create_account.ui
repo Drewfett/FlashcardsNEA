@@ -49,7 +49,7 @@
       <string notr="true">font: 28pt</string>
      </property>
      <property name="text">
-      <string>-Create Account-</string>
+      <string>Create Account</string>
      </property>
      <property name="alignment">
       <set>Qt::AlignCenter</set>

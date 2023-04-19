@@ -12,8 +12,8 @@
     <loaded-nodes />
   </component>
   <component name="DBNavigator.Project.DatabaseConsoleManager">
-    <connection id="5bb6436a-9fbd-444d-94d6-fc8a9b89cd7e">
-      <console name="Connection" type="STANDARD" schema="" session="Main" />
+    <connection id="8a04efc8-16f7-4776-9c07-e0de387d8d0e">
+      <console name="Connection 1" type="STANDARD" schema="main" session="Main" />
     </connection>
   </component>
   <component name="DBNavigator.Project.DatabaseEditorStateManager">
@@ -22,10 +22,14 @@
     </last-used-providers>
   </component>
   <component name="DBNavigator.Project.DatabaseFileManager">
-    <open-files />
+    <open-files>
+      <object connection-id="8a04efc8-16f7-4776-9c07-e0de387d8d0e" object-ref="schemas/main/tables/user_cards" />
+      <object connection-id="8a04efc8-16f7-4776-9c07-e0de387d8d0e" object-ref="schemas/main/tables/cards" />
+    </open-files>
   </component>
   <component name="DBNavigator.Project.DatasetFilterManager">
-    <filter-actions connection-id="5bb6436a-9fbd-444d-94d6-fc8a9b89cd7e" dataset="main.users" active-filter-id="EMPTY_FILTER" />
+    <filter-actions connection-id="8a04efc8-16f7-4776-9c07-e0de387d8d0e" dataset="main.cards" active-filter-id="EMPTY_FILTER" />
+    <filter-actions connection-id="8a04efc8-16f7-4776-9c07-e0de387d8d0e" dataset="main.user_cards" active-filter-id="EMPTY_FILTER" />
   </component>
   <component name="DBNavigator.Project.ExecutionManager">
     <retain-sticky-names value="false" />
@@ -47,9 +51,9 @@
   </component>
   <component name="DBNavigator.Project.Settings">
     <connections>
-      <connection id="5bb6436a-9fbd-444d-94d6-fc8a9b89cd7e" active="true" signed="true">
+      <connection id="8a04efc8-16f7-4776-9c07-e0de387d8d0e" active="true" signed="true">
         <database>
-          <name value="Connection" />
+          <name value="Connection 1" />
           <description value="" />
           <database-type value="SQLITE" />
           <config-type value="BASIC" />
@@ -92,7 +96,7 @@
           <session-management value="true" />
           <ddl-file-binding value="true" />
           <database-logging value="true" />
-          <connect-automatically value="false" />
+          <connect-automatically value="true" />
           <restore-workspace value="true" />
           <restore-workspace-deep value="false" />
           <environment-type value="default" />

@@ -54,7 +54,7 @@
         <string notr="true">font: 28pt</string>
        </property>
        <property name="text">
-        <string>-Welcome-</string>
+        <string>Omos</string>
        </property>
        <property name="alignment">
         <set>Qt::AlignCenter</set>
